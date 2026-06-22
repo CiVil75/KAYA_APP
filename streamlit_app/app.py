@@ -11,11 +11,23 @@ st.set_page_config(layout="wide")
 # CONFIG
 # =========================
 
+# Expanded list of relevant WDI indicators (human name -> code)
 INDICATORS = {
     "Population": "SP.POP.TOTL",
     "GDP": "NY.GDP.MKTP.CD",
-    "CO2": "EN.ATM.CO2E.KT",
-    "Energy": "EG.USE.PCAP.KG.OE"
+    "GDP_per_capita": "NY.GDP.PCAP.CD",
+    "CO2 (kt)": "EN.ATM.CO2E.KT",
+    "CO2 per capita": "EN.ATM.CO2E.PC",
+    "CO2 from solid fuel (% of total)": "EN.ATM.CO2E.SF.ZS",
+    "CO2 from liquid fuel (% of total)": "EN.ATM.CO2E.LF.ZS",
+    "CO2 from gaseous fuel (% of total)": "EN.ATM.CO2E.GF.ZS",
+    "Transport CO2 (% of fuel)": "EN.CO2.TRAN.ZS",
+    "Electricity/heat CO2 (% of fuel)": "EN.CO2.ETOT.ZS",
+    "Industry CO2 (% of fuel)": "EN.CO2.MANF.ZS",
+    "CO2 per unit of GDP (kg per 2015 PPP $)": "EN.ATM.CO2E.KD.GD",
+    "CO2 per unit energy (kg per kg oil eq)": "EN.ATM.CO2E.EG.ZS",
+    "Energy per capita (kg oil eq)": "EG.USE.PCAP.KG.OE",
+    "Energy use (total, ktoe)": "EG.USE.COMM.KT.OE"
 }
 
 COUNTRIES = {
@@ -55,7 +67,7 @@ def fetch_indicator(country, indicator, start, end):
     """Fetch an indicator from the World Bank API and return a DataFrame with columns [year, <indicator>].
 
     This function uses HTTPS, a requests session with retries, timeout and robust JSON checks.
-    NOTE: This function does NOT call Streamlit UI functions (st.*) because it is cached.
+    It must not call Streamlit UI functions because it's cached.
     """
     base = "https://api.worldbank.org/v2"
     url = f"{base}/country/{country}/indicator/{indicator}?format=json&date={start}:{end}&per_page=1000"
@@ -65,7 +77,6 @@ def fetch_indicator(country, indicator, start, end):
     try:
         resp = session.get(url, timeout=10)
     except requests.RequestException:
-        # Network error -> return empty DataFrame
         return pd.DataFrame()
 
     if resp.status_code != 200:
@@ -76,7 +87,6 @@ def fetch_indicator(country, indicator, start, end):
     except ValueError:
         return pd.DataFrame()
 
-    # Expecting a list: [metadata, records]
     if not isinstance(data, list) or len(data) < 2 or not data[1]:
         return pd.DataFrame()
 
@@ -89,71 +99,11 @@ def fetch_indicator(country, indicator, start, end):
     df = df[["date", "value"]].copy()
     df.columns = ["year", indicator]
 
-    # convert year to int where possible
     try:
         df["year"] = df["year"].astype(int)
     except Exception:
         df = df[df["year"].str.isdigit()]
         df["year"] = df["year"].astype(int)
-
-    return df
-
-
-@st.cache_data
-def get_data(country, year_range):
-    """Return merged DataFrame of indicators for the given country and year range.
-
-    This cached function does not call st.*; it returns an empty DataFrame if data
-    are insufficient. Any UI messages must be shown outside this function.
-    The function will attempt a fallback for CO2 using EN.ATM.CO2E.PC (per-capita) if
-    the primary CO2 indicator EN.ATM.CO2E.KT is not available.
-    """
-    start, end = year_range
-
-    dfs = []
-
-    for name, code in INDICATORS.items():
-        df_ind = fetch_indicator(country, code, start, end)
-        if df_ind.empty:
-            continue
-
-        # rename column from code to human-readable name
-        df_ind.rename(columns={code: name}, inplace=True)
-        dfs.append(df_ind)
-
-    if not dfs:
-        return pd.DataFrame()
-
-    # merge on year
-    df = dfs[0]
-    for d in dfs[1:]:
-        df = df.merge(d, on="year", how="outer")
-
-    df = df.sort_values("year")
-
-    # Attempt CO2 fallback if primary CO2 indicator missing
-    if "CO2" not in df.columns:
-        # try per-capita indicator EN.ATM.CO2E.PC
-        co2_pc_df = fetch_indicator(country, "EN.ATM.CO2E.PC", start, end)
-        if not co2_pc_df.empty and "Population" in df.columns:
-            co2_pc_df.rename(columns={"EN.ATM.CO2E.PC": "CO2_pc"}, inplace=True)
-            df = df.merge(co2_pc_df, on="year", how="left")
-            # compute CO2 in kilotons: (metric tons per person * population) / 1000
-            df["CO2"] = (
-                pd.to_numeric(df["CO2_pc"], errors="coerce") * pd.to_numeric(df["Population"], errors="coerce")
-            ) / 1000.0
-            df["CO2_from_fallback"] = df["CO2"].notna()
-
-    # Required indicators for Kaya calculation
-    required = ["Population", "GDP", "Energy", "CO2"]
-
-    # If any required column is missing entirely, return empty; UI will handle messaging
-    missing_cols = [c for c in required if c not in df.columns]
-    if missing_cols:
-        return pd.DataFrame()
-
-    # Keep only rows with all required values present
-    df = df.dropna(subset=required)
 
     return df
 
@@ -168,6 +118,50 @@ def get_indicator_years(country, code, start, end):
     return years
 
 
+@st.cache_data
+def get_data(country, year_range, indicators_map):
+    """Return merged DataFrame of selected indicators for the given country and year range.
+
+    indicators_map: dict mapping human name -> code
+    """
+    start, end = year_range
+
+    dfs = []
+
+    for name, code in indicators_map.items():
+        # skip empty codes
+        if not code or not isinstance(code, str):
+            continue
+        df_ind = fetch_indicator(country, code, start, end)
+        if df_ind.empty:
+            continue
+        # rename column to human-readable name
+        df_ind.rename(columns={code: name}, inplace=True)
+        dfs.append(df_ind)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    df = dfs[0]
+    for d in dfs[1:]:
+        df = df.merge(d, on="year", how="outer")
+
+    df = df.sort_values("year")
+
+    # If CO2 missing, try fallback per-capita conversion
+    if "CO2 (kt)" not in df.columns:
+        co2_pc_df = fetch_indicator(country, "EN.ATM.CO2E.PC", start, end)
+        if not co2_pc_df.empty and "Population" in df.columns:
+            co2_pc_df.rename(columns={"EN.ATM.CO2E.PC": "CO2_pc"}, inplace=True)
+            df = df.merge(co2_pc_df, on="year", how="left")
+            df["CO2 (kt)"] = (
+                pd.to_numeric(df["CO2_pc"], errors="coerce") * pd.to_numeric(df["Population"], errors="coerce")
+            ) / 1000.0
+            df["CO2_from_fallback"] = df["CO2 (kt)"].notna()
+
+    return df
+
+
 # =========================
 # KAYA MODEL
 # =========================
@@ -175,17 +169,44 @@ def get_indicator_years(country, code, start, end):
 def compute_kaya(df):
     df = df.copy()
 
+    # Expect columns: Population, GDP, Energy (per capita) or Energy_total
+    if "GDP" not in df.columns or "Population" not in df.columns:
+        raise ValueError("Missing Population or GDP for Kaya computation")
+
     # GDP per capita
     df["GDP_pc"] = df["GDP"] / df["Population"]
 
-    # Energy is per capita -> reconstruct total
-    df["Energy_total"] = df["Energy"] * df["Population"]
+    # If Energy provided as per-capita (EG.USE.PCAP.KG.OE), reconstruct total
+    if "EG.USE.PCAP.KG.OE" in df.columns:
+        df.rename(columns={"EG.USE.PCAP.KG.OE": "Energy_per_capita"}, inplace=True)
+        df["Energy_total"] = df["Energy_per_capita"] * df["Population"]
+    elif "Energy per capita (kg oil eq)" in df.columns:
+        df["Energy_total"] = df["Energy per capita (kg oil eq)"] * df["Population"]
+    elif "Energy" in df.columns:
+        df["Energy_total"] = df["Energy"] * df["Population"]
+    else:
+        # try any energy-like column
+        energy_cols = [c for c in df.columns if "Energy" in c or c.startswith("EG.")]
+        if energy_cols:
+            df["Energy_total"] = pd.to_numeric(df[energy_cols[0]], errors="coerce") * df["Population"]
+        else:
+            raise ValueError("Missing Energy indicator for Kaya computation")
 
     # Intensities
     df["Energy_intensity"] = df["Energy_total"] / df["GDP"]
-    df["Carbon_intensity"] = df["CO2"] / df["Energy_total"]
 
-    # Reconstructed CO2 via Kaya identity
+    # Use CO2 column if present (try both names)
+    co2_col = None
+    if "CO2 (kt)" in df.columns:
+        co2_col = "CO2 (kt)"
+    elif "CO2" in df.columns:
+        co2_col = "CO2"
+
+    if co2_col is None:
+        raise ValueError("Missing CO2 indicator for Kaya computation")
+
+    df["Carbon_intensity"] = pd.to_numeric(df[co2_col], errors="coerce") / df["Energy_total"]
+
     df["CO2_reconstructed"] = (
         df["Population"]
         * df["GDP_pc"]
@@ -235,127 +256,99 @@ with col1:
     country_name = st.selectbox("Select Country", list(COUNTRIES.keys()))
 
 with col2:
-    years = st.slider("Years", 1990, 2022, (1990, 2020))
+    years = st.slider("Years", 1960, 2022, (1990, 2020))
 
 country_code = COUNTRIES[country_name]
 
-# Availability: compute on demand inside the expander to avoid startup network loops
-with st.expander("📚 Indicator availability for selected country & range"):
-    if st.button("Compute availability"):
-        start_year, end_year = years
-        availability = []
-        missing_indicators = []
-        with st.spinner("Checking indicator availability..."):
-            for name, code in INDICATORS.items():
-                # For CO2, also check fallback per-capita indicator and report both
-                if name == "CO2":
-                    yrs_primary = get_indicator_years(country_code, code, start_year, end_year)
-                    yrs_fallback = get_indicator_years(country_code, "EN.ATM.CO2E.PC", start_year, end_year)
+st.markdown("""Select which indicators to load. By default a curated set of climate & energy indicators
+from the World Bank WDI is selected. You can also paste additional WDI indicator codes (comma-separated)
+into the text box and click 'Add indicators'.""")
 
-                    if yrs_primary:
-                        primary_str = f"KT: {min(yrs_primary)}-{max(yrs_primary)} ({len(yrs_primary)} years)"
-                    else:
-                        primary_str = "No data"
+# Multiselect for indicators (human names)
+indicator_names = list(INDICATORS.keys())
+selected = st.multiselect("Indicators to fetch", indicator_names, default=indicator_names)
 
-                    if yrs_fallback:
-                        fallback_str = f"PC (fallback): {min(yrs_fallback)}-{max(yrs_fallback)} ({len(yrs_fallback)} years)"
-                    else:
-                        fallback_str = "No data"
+# Text input for additional raw indicator codes (comma-separated). Format: CODE or CODE:Name
+extra_raw = st.text_input("Extra WDI codes (comma-separated). Optionally use CODE:Name to provide a display name.")
+if st.button("Add indicators") and extra_raw.strip():
+    parts = [p.strip() for p in extra_raw.split(",") if p.strip()]
+    for p in parts:
+        if ":" in p:
+            code, name = p.split(":", 1)
+            INDICATORS[name.strip()] = code.strip()
+            selected.append(name.strip())
+        else:
+            # use code as name if no name provided
+            code = p
+            INDICATORS[code] = code
+            selected.append(code)
+    st.success("Added extra indicators to the selection. Click 'Load data' to fetch.")
 
-                    combined = primary_str
-                    if yrs_fallback and not yrs_primary:
-                        # primary missing but fallback exists: mark as missing indicator (but available via fallback)
-                        combined = f"Fallback used -> {fallback_str}"
-                        missing_indicators.append(name)
-                    elif yrs_fallback and yrs_primary:
-                        combined = f"{primary_str}; fallback available -> {fallback_str}"
+# Button to load the selected data (avoids heavy startup network activity)
+if st.button("Load data"):
+    with st.spinner("Fetching indicators from World Bank..."):
+        to_fetch = {name: INDICATORS[name] for name in selected}
+        df = get_data(country_code, years, to_fetch)
 
-                    availability.append({"Indicator": name, "Code": code, "Available": combined, "Fallback": fallback_str if yrs_fallback else ""})
-                else:
-                    yrs = get_indicator_years(country_code, code, start_year, end_year)
-                    if yrs:
-                        yrs_str = f"{min(yrs)}-{max(yrs)} ({len(yrs)} years)"
-                    else:
-                        yrs_str = "No data"
-                        missing_indicators.append(name)
-                    availability.append({"Indicator": name, "Code": code, "Available": yrs_str, "Fallback": ""})
-        avail_df = pd.DataFrame(availability)
-        st.table(avail_df)
+        if df.empty:
+            st.error("No data available for the selected country and years. Try expanding the year range or check indicators.")
+            st.stop()
 
-        if missing_indicators:
-            st.warning(
-                f"Non tutti gli indicatori sono disponibili per il paese/intervallo selezionato: {', '.join(missing_indicators)}. "
-                "La validazione della Kaya richiede tutti gli indicatori; prova ad ampliare l'intervallo di anni o a selezionare un altro paese."
+        # Notify user if CO2 fallback used
+        if "CO2_from_fallback" in df.columns and df["CO2_from_fallback"].any():
+            st.info("CO2 values were reconstructed from per-capita indicator because the primary CO2 indicator was not available for some years.")
+
+        # Compute KAYA if possible, otherwise show partial results
+        try:
+            df_kaya = compute_kaya(df)
+            kaya_ok = True
+        except Exception as e:
+            st.warning(f"Kaya computation not possible: {e}. Showing available variables instead.")
+            kaya_ok = False
+
+        # Show raw data
+        with st.expander("🔍 Show raw data"):
+            st.dataframe(df)
+
+        # Show available plots (for selected variables)
+        st.subheader("📊 Available Variables")
+        # choose numeric columns to plot
+        numeric_cols = [c for c in df.columns if c != "year" and pd.api.types.is_numeric_dtype(df[c])]
+        for col in ["Population", "GDP", "GDP_pc", "Energy_total", "Energy_per_capita", "CO2 (kt)"]:
+            if col in df.columns or col in numeric_cols:
+                try:
+                    st.plotly_chart(plot_variable(df, col if col in df.columns else col), use_container_width=True)
+                except Exception:
+                    pass
+
+        # If Kaya computed, show Kaya outputs
+        if kaya_ok:
+            st.subheader("📊 Kaya Factors")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(plot_variable(df_kaya, "Population"), use_container_width=True)
+                st.plotly_chart(plot_variable(df_kaya, "GDP_pc"), use_container_width=True)
+            with col2:
+                st.plotly_chart(plot_variable(df_kaya, "Energy_intensity"), use_container_width=True)
+                st.plotly_chart(plot_variable(df_kaya, "Carbon_intensity"), use_container_width=True)
+
+            st.subheader("📈 Normalized Trends")
+            variable = st.selectbox(
+                "Select variable",
+                ["Population", "GDP_pc", "Energy_intensity", "Carbon_intensity"]
             )
+            st.plotly_chart(plot_normalized(df_kaya, variable), use_container_width=True)
 
-# =========================
-# DATA PROCESS
-# =========================
+            st.subheader("🧮 Kaya Identity Validation")
+            fig = px.line(
+                df_kaya,
+                x="year",
+                y=["CO2 (kt)", "CO2_reconstructed"],
+                title="Actual vs Reconstructed CO₂"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-df = get_data(country_code, years)
+else:
+    st.info("Click 'Load data' to fetch selected indicators from the World Bank for the chosen country and year range.")
 
-if df.empty:
-    st.error("No data available for the selected country and years. Try expanding the year range or check indicators.")
-    st.stop()
-
-# Notify user if CO2 was obtained via fallback
-if "CO2_from_fallback" in df.columns and df["CO2_from_fallback"].any():
-    st.info("CO2 values were reconstructed from EN.ATM.CO2E.PC (per-capita) because the primary CO2 indicator was not available for some years.")
-
-# compute kaya components
-try:
-    df = compute_kaya(df)
-except Exception as e:
-    st.error(f"Error computing Kaya identity: {e}")
-    st.stop()
-
-# =========================
-# OUTPUT
-# =========================
-
-st.subheader("📊 Kaya Factors")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.plotly_chart(plot_variable(df, "Population"), use_container_width=True)
-    st.plotly_chart(plot_variable(df, "GDP_pc"), use_container_width=True)
-
-with col2:
-    st.plotly_chart(plot_variable(df, "Energy_intensity"), use_container_width=True)
-    st.plotly_chart(plot_variable(df, "Carbon_intensity"), use_container_width=True)
-
-# =========================
-# NORMALIZED VIEW
-# =========================
-
-st.subheader("📈 Normalized Trends")
-
-variable = st.selectbox(
-    "Select variable",
-    ["Population", "GDP_pc", "Energy_intensity", "Carbon_intensity"]
-)
-
-st.plotly_chart(plot_normalized(df, variable), use_container_width=True)
-
-# =========================
-# KAYA CHECK
-# =========================
-
-st.subheader("🧮 Kaya Identity Validation")
-
-fig = px.line(
-    df,
-    x="year",
-    y=["CO2", "CO2_reconstructed"],
-    title="Actual vs Reconstructed CO₂"
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# =========================
-# RAW DATA
-# =========================
-
-with st.expander("🔍 Show raw data"):
-    st.dataframe(df)
+# End of file
