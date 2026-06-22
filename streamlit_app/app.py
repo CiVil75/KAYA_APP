@@ -128,8 +128,19 @@ def get_data(country, year_range):
 
     df = df.sort_values("year")
 
-    # Only drop rows that are missing the core indicators needed for Kaya calculation
+    # Required indicators for Kaya calculation
     required = ["Population", "GDP", "Energy", "CO2"]
+
+    # Check which required columns are present
+    missing_cols = [c for c in required if c not in df.columns]
+    if missing_cols:
+        st.warning(
+            f"Impossibile calcolare la Kaya: mancano i seguenti indicatori per il paese/periodo selezionato: {', '.join(missing_cols)}. "
+            "Prova ad ampliare l'intervallo di anni o verifica gli indicatori disponibili."
+        )
+        return pd.DataFrame()
+
+    # Keep only rows with all required values present
     df = df.dropna(subset=required)
 
     return df
