@@ -18,6 +18,7 @@ INDICATORS = {
     "GDP_per_capita": "NY.GDP.PCAP.CD",
     "CO2 (kt)": "EN.ATM.CO2E.KT",
     "CO2 per capita": "EN.ATM.CO2E.PC",
+    "CO2 per unit energy (kg per kg oil eq)": "EN.ATM.CO2E.EG.ZS",
     "CO2 from solid fuel (% of total)": "EN.ATM.CO2E.SF.ZS",
     "CO2 from liquid fuel (% of total)": "EN.ATM.CO2E.LF.ZS",
     "CO2 from gaseous fuel (% of total)": "EN.ATM.CO2E.GF.ZS",
@@ -25,7 +26,6 @@ INDICATORS = {
     "Electricity/heat CO2 (% of fuel)": "EN.CO2.ETOT.ZS",
     "Industry CO2 (% of fuel)": "EN.CO2.MANF.ZS",
     "CO2 per unit of GDP (kg per 2015 PPP $)": "EN.ATM.CO2E.KD.GD",
-    "CO2 per unit energy (kg per kg oil eq)": "EN.ATM.CO2E.EG.ZS",
     "Energy per capita (kg oil eq)": "EG.USE.PCAP.KG.OE",
     "Energy use (total, ktoe)": "EG.USE.COMM.KT.OE"
 }
@@ -39,6 +39,14 @@ COUNTRIES = {
     "France": "FRA",
     "UK": "GBR"
 }
+
+# Conversion constants (to kg oil equivalent)
+# Source / rationale summarized in the assistant reply below
+TOE_TO_KG_OIL_EQ = 1000.0            # 1 toe = 1000 kg oil-equivalent
+KTOE_TO_KG_OIL_EQ = 1_000_000.0      # 1 ktoe = 1,000 toe = 1,000,000 kg
+MWH_TO_KG_OIL_EQ = 85.98             # 1 MWh ≈ 0.08598 toe -> *1000 = 85.98 kg
+KWH_TO_KG_OIL_EQ = MWH_TO_KG_OIL_EQ / 1000.0
+GJ_TO_KG_OIL_EQ = 23.9               # 1 GJ ≈ 0.0239 toe -> *1000 = 23.9 kg
 
 # =========================
 # HELPERS
@@ -118,18 +126,61 @@ def get_indicator_years(country, code, start, end):
     return years
 
 
+def _detect_energy_unit(code: str, name: str):
+    """Heuristic detection of energy units from WDI code or human name.
+
+    Returns one of: 'kg_per_capita', 'ktoe', 'toe', 'mwh', 'kwh', 'gwh', 'gj', or None
+    """
+    code_l = code.lower() if isinstance(code, str) else ""
+    name_l = name.lower() if isinstance(name, str) else ""
+
+    # per-capita in kg oil-equivalent
+    if "pcap" in code_l or "per capita" in name_l:
+        if "kg" in code_l or "kg" in name_l or "kg oil" in name_l or "kg.o" in code_l:
+            return "kg_per_capita"
+        # sometimes per-capita is given in toe per capita
+        if "toe" in code_l or "toe" in name_l:
+            return "toe_per_capita"
+        if "mwh" in code_l or "mwh" in name_l:
+            return "mwh_per_capita"
+
+    # total ktoe / toe
+    if "ktoe" in code_l or "kt.oe" in code_l or "ktoe" in name_l or "kto" in name_l:
+        return "ktoe"
+    if "toe" in code_l and "ktoe" not in code_l:
+        return "toe"
+
+    # electricity or energy in MWh/kWh/GWh
+    if "mwh" in code_l or "mwh" in name_l:
+        return "mwh"
+    if "kwh" in code_l or "kwh" in name_l:
+        return "kwh"
+    if "gwh" in code_l or "gwh" in name_l:
+        return "gwh"
+
+    # gigajoule
+    if "gj" in code_l or "gJ" in name_l or "gigajoule" in name_l:
+        return "gj"
+
+    return None
+
+
 @st.cache_data
 def get_data(country, year_range, indicators_map):
     """Return merged DataFrame of selected indicators for the given country and year range.
 
     indicators_map: dict mapping human name -> code
+    The function will try multiple fallbacks to reconstruct absolute CO2 (in kt):
+      1. Use EN.ATM.CO2E.KT directly if available
+      2. Use EN.ATM.CO2E.PC (per-capita) and Population to compute kt
+      3. Use EN.ATM.CO2E.EG.ZS (kg CO2 per kg oil-eq) and energy indicators (in various units) to compute kt
     """
     start, end = year_range
 
     dfs = []
 
+    # fetch each selected indicator
     for name, code in indicators_map.items():
-        # skip empty codes
         if not code or not isinstance(code, str):
             continue
         df_ind = fetch_indicator(country, code, start, end)
@@ -142,23 +193,109 @@ def get_data(country, year_range, indicators_map):
     if not dfs:
         return pd.DataFrame()
 
+    # merge on year
     df = dfs[0]
     for d in dfs[1:]:
         df = df.merge(d, on="year", how="outer")
 
-    df = df.sort_values("year")
+    df = df.sort_values("year").reset_index(drop=True)
 
-    # If CO2 missing, try fallback per-capita conversion
+    # ---- Energy unit normalization ----
+    # We try to produce these standardized columns if possible:
+    # - energy_total_kg_oil_eq  (total energy in kg oil-equivalent)
+    # - energy_per_capita_kg_oil_eq (per-person in kg oil-equivalent)
+
+    energy_total = None
+    energy_per_capita = None
+
+    # First, look for explicit per-capita in kg oil eq
+    for name, code in indicators_map.items():
+        unit = _detect_energy_unit(code, name)
+        if unit == "kg_per_capita" and name in df.columns:
+            energy_per_capita = pd.to_numeric(df[name], errors="coerce")
+            df["energy_per_capita_kg_oil_eq"] = energy_per_capita
+            # total energy
+            if "Population" in df.columns:
+                df["energy_total_kg_oil_eq"] = energy_per_capita * pd.to_numeric(df["Population"], errors="coerce")
+                energy_total = df["energy_total_kg_oil_eq"]
+            break
+
+    # If not found, look for total ktoe / toe / MWh / GWh / GJ / kWh
+    if energy_total is None:
+        for name, code in indicators_map.items():
+            unit = _detect_energy_unit(code, name)
+            if unit and name in df.columns:
+                vals = pd.to_numeric(df[name], errors="coerce")
+                if unit == "ktoe":
+                    df["energy_total_kg_oil_eq"] = vals * KTOE_TO_KG_OIL_EQ
+                    energy_total = df["energy_total_kg_oil_eq"]
+                    break
+                if unit == "toe":
+                    df["energy_total_kg_oil_eq"] = vals * TOE_TO_KG_OIL_EQ
+                    energy_total = df["energy_total_kg_oil_eq"]
+                    break
+                if unit == "mwh":
+                    # treat as TOTAL MWh unless per-capita detected earlier
+                    df["energy_total_kg_oil_eq"] = vals * MWH_TO_KG_OIL_EQ
+                    energy_total = df["energy_total_kg_oil_eq"]
+                    break
+                if unit == "gwh":
+                    df["energy_total_kg_oil_eq"] = vals * (MWH_TO_KG_OIL_EQ * 1000.0)
+                    energy_total = df["energy_total_kg_oil_eq"]
+                    break
+                if unit == "kwh":
+                    df["energy_total_kg_oil_eq"] = vals * KWH_TO_KG_OIL_EQ
+                    energy_total = df["energy_total_kg_oil_eq"]
+                    break
+                if unit == "gj":
+                    df["energy_total_kg_oil_eq"] = vals * GJ_TO_KG_OIL_EQ
+                    energy_total = df["energy_total_kg_oil_eq"]
+                    break
+
+    # If we have per-capita in toe or MWh, convert to kg and multiply by population
+    if ("energy_total_kg_oil_eq" not in df.columns) and ("Population" in df.columns):
+        for name, code in indicators_map.items():
+            unit = _detect_energy_unit(code, name)
+            if unit and name in df.columns:
+                vals = pd.to_numeric(df[name], errors="coerce")
+                if unit == "toe_per_capita":
+                    df["energy_per_capita_kg_oil_eq"] = vals * TOE_TO_KG_OIL_EQ
+                    df["energy_total_kg_oil_eq"] = df["energy_per_capita_kg_oil_eq"] * pd.to_numeric(df["Population"], errors="coerce")
+                    energy_total = df["energy_total_kg_oil_eq"]
+                    break
+                if unit == "mwh_per_capita":
+                    df["energy_per_capita_kg_oil_eq"] = vals * MWH_TO_KG_OIL_EQ
+                    df["energy_total_kg_oil_eq"] = df["energy_per_capita_kg_oil_eq"] * pd.to_numeric(df["Population"], errors="coerce")
+                    energy_total = df["energy_total_kg_oil_eq"]
+                    break
+
+    # Normalize column names if we produced them
+    if "energy_total_kg_oil_eq" in df.columns:
+        # make numeric
+        df["energy_total_kg_oil_eq"] = pd.to_numeric(df["energy_total_kg_oil_eq"], errors="coerce")
+        # derive per-capita if missing
+        if "energy_per_capita_kg_oil_eq" not in df.columns and "Population" in df.columns:
+            df["energy_per_capita_kg_oil_eq"] = df["energy_total_kg_oil_eq"] / pd.to_numeric(df["Population"], errors="coerce")
+
+    # ---- CO2 reconstruction fallbacks ----
+    # 1) direct CO2 (kt) already present? do nothing
     if "CO2 (kt)" not in df.columns:
+        # 2) try per-capita
         co2_pc_df = fetch_indicator(country, "EN.ATM.CO2E.PC", start, end)
         if not co2_pc_df.empty and "Population" in df.columns:
-            co2_pc_df.rename(columns={"EN.ATM.CO2E.PC": "CO2_pc"}, inplace=True)
+            co2_pc_df.rename(columns={"EN.ATM.CO2E.PC": "CO2_per_capita"}, inplace=True)
             df = df.merge(co2_pc_df, on="year", how="left")
-            df["CO2 (kt)"] = (
-                pd.to_numeric(df["CO2_pc"], errors="coerce") * pd.to_numeric(df["Population"], errors="coerce")
-            ) / 1000.0
-            df["CO2_from_fallback"] = df["CO2 (kt)"].notna()
+            df["CO2 (kt)"] = (pd.to_numeric(df["CO2_per_capita"], errors="coerce") * pd.to_numeric(df["Population"], errors="coerce")) / 1000.0
+            df["CO2_from_per_capita"] = df["CO2 (kt)"].notna()
 
+    # 3) if still absent, try CO2 per unit energy (kg CO2 per kg oil-eq) and energy_total_kg_oil_eq
+    if "CO2 (kt)" not in df.columns and "CO2 per unit energy (kg per kg oil eq)" in indicators_map.keys():
+        if "CO2 per unit energy (kg per kg oil eq)" in df.columns and "energy_total_kg_oil_eq" in df.columns:
+            df["CO2_kg_from_energy"] = pd.to_numeric(df["CO2 per unit energy (kg per kg oil eq)"], errors="coerce") * pd.to_numeric(df["energy_total_kg_oil_eq"], errors="coerce")
+            df["CO2 (kt)"] = df["CO2_kg_from_energy"] / 1_000_000.0
+            df["CO2_from_per_energy"] = df["CO2 (kt)"].notna()
+
+    # Final: return DataFrame with whatever we could compute/merge; downstream code will check columns
     return df
 
 
@@ -169,46 +306,33 @@ def get_data(country, year_range, indicators_map):
 def compute_kaya(df):
     df = df.copy()
 
-    # Expect columns: Population, GDP, Energy (per capita) or Energy_total
-    if "GDP" not in df.columns or "Population" not in df.columns:
+    if "Population" not in df.columns or "GDP" not in df.columns:
         raise ValueError("Missing Population or GDP for Kaya computation")
 
-    # GDP per capita
-    df["GDP_pc"] = df["GDP"] / df["Population"]
+    df["GDP_pc"] = pd.to_numeric(df["GDP"], errors="coerce") / pd.to_numeric(df["Population"], errors="coerce")
 
-    # If Energy provided as per-capita (EG.USE.PCAP.KG.OE), reconstruct total
-    if "EG.USE.PCAP.KG.OE" in df.columns:
-        df.rename(columns={"EG.USE.PCAP.KG.OE": "Energy_per_capita"}, inplace=True)
-        df["Energy_total"] = df["Energy_per_capita"] * df["Population"]
-    elif "Energy per capita (kg oil eq)" in df.columns:
-        df["Energy_total"] = df["Energy per capita (kg oil eq)"] * df["Population"]
-    elif "Energy" in df.columns:
-        df["Energy_total"] = df["Energy"] * df["Population"]
+    # Use energy_total_kg_oil_eq if available
+    if "energy_total_kg_oil_eq" in df.columns:
+        df["Energy_total"] = df["energy_total_kg_oil_eq"]
     else:
-        # try any energy-like column
-        energy_cols = [c for c in df.columns if "Energy" in c or c.startswith("EG.")]
-        if energy_cols:
-            df["Energy_total"] = pd.to_numeric(df[energy_cols[0]], errors="coerce") * df["Population"]
+        # try previous fallbacks
+        if "Energy" in df.columns:
+            df["Energy_total"] = pd.to_numeric(df["Energy"], errors="coerce") * pd.to_numeric(df["Population"], errors="coerce")
         else:
             raise ValueError("Missing Energy indicator for Kaya computation")
 
-    # Intensities
-    df["Energy_intensity"] = df["Energy_total"] / df["GDP"]
+    df["Energy_intensity"] = df["Energy_total"] / pd.to_numeric(df["GDP"], errors="coerce")
 
-    # Use CO2 column if present (try both names)
-    co2_col = None
+    # Use CO2 (kt) converted to kg
     if "CO2 (kt)" in df.columns:
-        co2_col = "CO2 (kt)"
-    elif "CO2" in df.columns:
-        co2_col = "CO2"
-
-    if co2_col is None:
+        df_co2_kg = pd.to_numeric(df["CO2 (kt)"], errors="coerce") * 1_000_000.0
+    else:
         raise ValueError("Missing CO2 indicator for Kaya computation")
 
-    df["Carbon_intensity"] = pd.to_numeric(df[co2_col], errors="coerce") / df["Energy_total"]
+    df["Carbon_intensity"] = df_co2_kg / df["Energy_total"]
 
     df["CO2_reconstructed"] = (
-        df["Population"]
+        pd.to_numeric(df["Population"], errors="coerce")
         * df["GDP_pc"]
         * df["Energy_intensity"]
         * df["Carbon_intensity"]
@@ -236,12 +360,7 @@ def plot_normalized(df, var):
     d = df.copy()
     d["normalized"] = d[var] / base_val
 
-    return px.line(
-        d,
-        x="year",
-        y="normalized",
-        title=f"{var} (normalized to {base_year})"
-    )
+    return px.line(d, x="year", y="normalized", title=f"{var} (normalized to {base_year})")
 
 
 # =========================
@@ -251,10 +370,8 @@ def plot_normalized(df, var):
 st.title("🌍 Kaya Identity Explorer")
 
 col1, col2 = st.columns(2)
-
 with col1:
     country_name = st.selectbox("Select Country", list(COUNTRIES.keys()))
-
 with col2:
     years = st.slider("Years", 1960, 2022, (1990, 2020))
 
@@ -278,11 +395,33 @@ if st.button("Add indicators") and extra_raw.strip():
             INDICATORS[name.strip()] = code.strip()
             selected.append(name.strip())
         else:
-            # use code as name if no name provided
             code = p
             INDICATORS[code] = code
             selected.append(code)
     st.success("Added extra indicators to the selection. Click 'Load data' to fetch.")
+
+# Availability: compute on demand inside the expander
+with st.expander("📚 Indicator availability for selected country & range"):
+    if st.button("Compute availability"):
+        start_year, end_year = years
+        availability = []
+        missing_indicators = []
+        with st.spinner("Checking indicator availability..."):
+            for name, code in INDICATORS.items():
+                yrs = get_indicator_years(country_code, code, start_year, end_year)
+                if yrs:
+                    yrs_str = f"{min(yrs)}-{max(yrs)} ({len(yrs)} years)"
+                else:
+                    yrs_str = "No data"
+                    missing_indicators.append(name)
+                availability.append({"Indicator": name, "Code": code, "Available": yrs_str})
+        avail_df = pd.DataFrame(availability)
+        st.table(avail_df)
+        if missing_indicators:
+            st.warning(
+                f"Non tutti gli indicatori sono disponibili per il paese/intervallo selezionato: {', '.join(missing_indicators)}. "
+                "La validazione della Kaya richiede alcuni indicatori; prova ad ampliare l'intervallo di anni o a selezionare un altro paese."
+            )
 
 # Button to load the selected data (avoids heavy startup network activity)
 if st.button("Load data"):
@@ -295,10 +434,12 @@ if st.button("Load data"):
             st.stop()
 
         # Notify user if CO2 fallback used
-        if "CO2_from_fallback" in df.columns and df["CO2_from_fallback"].any():
-            st.info("CO2 values were reconstructed from per-capita indicator because the primary CO2 indicator was not available for some years.")
+        if "CO2_from_per_capita" in df.columns and df["CO2_from_per_capita"].any():
+            st.info("CO2 values were reconstructed from per-capita indicator (EN.ATM.CO2E.PC).")
+        if "CO2_from_per_energy" in df.columns and df["CO2_from_per_energy"].any():
+            st.info("CO2 values were reconstructed from CO2 per unit energy (EN.ATM.CO2E.EG.ZS) and energy indicators.")
 
-        # Compute KAYA if possible, otherwise show partial results
+        # Attempt Kaya
         try:
             df_kaya = compute_kaya(df)
             kaya_ok = True
@@ -312,9 +453,8 @@ if st.button("Load data"):
 
         # Show available plots (for selected variables)
         st.subheader("📊 Available Variables")
-        # choose numeric columns to plot
         numeric_cols = [c for c in df.columns if c != "year" and pd.api.types.is_numeric_dtype(df[c])]
-        for col in ["Population", "GDP", "GDP_pc", "Energy_total", "Energy_per_capita", "CO2 (kt)"]:
+        for col in ["Population", "GDP", "GDP_pc", "energy_total_kg_oil_eq", "energy_per_capita_kg_oil_eq", "CO2 (kt)"]:
             if col in df.columns or col in numeric_cols:
                 try:
                     st.plotly_chart(plot_variable(df, col if col in df.columns else col), use_container_width=True)
@@ -324,28 +464,20 @@ if st.button("Load data"):
         # If Kaya computed, show Kaya outputs
         if kaya_ok:
             st.subheader("📊 Kaya Factors")
-            col1, col2 = st.columns(2)
-            with col1:
+            c1, c2 = st.columns(2)
+            with c1:
                 st.plotly_chart(plot_variable(df_kaya, "Population"), use_container_width=True)
                 st.plotly_chart(plot_variable(df_kaya, "GDP_pc"), use_container_width=True)
-            with col2:
+            with c2:
                 st.plotly_chart(plot_variable(df_kaya, "Energy_intensity"), use_container_width=True)
                 st.plotly_chart(plot_variable(df_kaya, "Carbon_intensity"), use_container_width=True)
 
             st.subheader("📈 Normalized Trends")
-            variable = st.selectbox(
-                "Select variable",
-                ["Population", "GDP_pc", "Energy_intensity", "Carbon_intensity"]
-            )
+            variable = st.selectbox("Select variable", ["Population", "GDP_pc", "Energy_intensity", "Carbon_intensity"])
             st.plotly_chart(plot_normalized(df_kaya, variable), use_container_width=True)
 
             st.subheader("🧮 Kaya Identity Validation")
-            fig = px.line(
-                df_kaya,
-                x="year",
-                y=["CO2 (kt)", "CO2_reconstructed"],
-                title="Actual vs Reconstructed CO₂"
-            )
+            fig = px.line(df_kaya, x="year", y=["CO2 (kt)", "CO2_reconstructed"], title="Actual vs Reconstructed CO₂")
             st.plotly_chart(fig, use_container_width=True)
 
 else:
