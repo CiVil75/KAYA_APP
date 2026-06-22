@@ -55,6 +55,7 @@ def fetch_indicator(country, indicator, start, end):
     """Fetch an indicator from the World Bank API and return a DataFrame with columns [year, <indicator>].
 
     This function uses HTTPS, a requests session with retries, timeout and robust JSON checks.
+    NOTE: This function does NOT call Streamlit UI functions (st.*) because it is cached.
     """
     base = "https://api.worldbank.org/v2"
     url = f"{base}/country/{country}/indicator/{indicator}?format=json&date={start}:{end}&per_page=1000"
@@ -63,19 +64,16 @@ def fetch_indicator(country, indicator, start, end):
 
     try:
         resp = session.get(url, timeout=10)
-    except requests.RequestException as e:
-        # Network error (DNS, timeout, connection error, etc.)
-        st.warning(f"Network error when requesting World Bank API for {indicator}: {e}")
+    except requests.RequestException:
+        # Network error -> return empty DataFrame
         return pd.DataFrame()
 
     if resp.status_code != 200:
-        st.warning(f"World Bank API returned status {resp.status_code} for URL: {url}")
         return pd.DataFrame()
 
     try:
         data = resp.json()
     except ValueError:
-        st.warning(f"World Bank API returned non-JSON response for URL: {url}")
         return pd.DataFrame()
 
     # Expecting a list: [metadata, records]
@@ -103,6 +101,13 @@ def fetch_indicator(country, indicator, start, end):
 
 @st.cache_data
 def get_data(country, year_range):
+    """Return merged DataFrame of indicators for the given country and year range.
+
+    This cached function does not call st.*; it returns an empty DataFrame if data
+    are insufficient. Any UI messages must be shown outside this function.
+    The function will attempt a fallback for CO2 using EN.ATM.CO2E.PC (per-capita) if
+    the primary CO2 indicator EN.ATM.CO2E.KT is not available.
+    """
     start, end = year_range
 
     dfs = []
@@ -110,8 +115,6 @@ def get_data(country, year_range):
     for name, code in INDICATORS.items():
         df_ind = fetch_indicator(country, code, start, end)
         if df_ind.empty:
-            # keep track via warning but continue — we'll decide later which years are usable
-            st.info(f"Indicator {name} ({code}) has no data for {country} in {start}:{end} or request failed.")
             continue
 
         # rename column from code to human-readable name
@@ -128,16 +131,25 @@ def get_data(country, year_range):
 
     df = df.sort_values("year")
 
+    # Attempt CO2 fallback if primary CO2 indicator missing
+    if "CO2" not in df.columns:
+        # try per-capita indicator EN.ATM.CO2E.PC
+        co2_pc_df = fetch_indicator(country, "EN.ATM.CO2E.PC", start, end)
+        if not co2_pc_df.empty and "Population" in df.columns:
+            co2_pc_df.rename(columns={"EN.ATM.CO2E.PC": "CO2_pc"}, inplace=True)
+            df = df.merge(co2_pc_df, on="year", how="left")
+            # compute CO2 in kilotons: (metric tons per person * population) / 1000
+            df["CO2"] = (
+                pd.to_numeric(df["CO2_pc"], errors="coerce") * pd.to_numeric(df["Population"], errors="coerce")
+            ) / 1000.0
+            df["CO2_from_fallback"] = df["CO2"].notna()
+
     # Required indicators for Kaya calculation
     required = ["Population", "GDP", "Energy", "CO2"]
 
-    # Check which required columns are present
+    # If any required column is missing entirely, return empty; UI will handle messaging
     missing_cols = [c for c in required if c not in df.columns]
     if missing_cols:
-        st.warning(
-            f"Impossibile calcolare la Kaya: mancano i seguenti indicatori per il paese/periodo selezionato: {', '.join(missing_cols)}. "
-            "Prova ad ampliare l'intervallo di anni o verifica gli indicatori disponibili."
-        )
         return pd.DataFrame()
 
     # Keep only rows with all required values present
@@ -227,20 +239,29 @@ with col2:
 
 country_code = COUNTRIES[country_name]
 
-# Show availability of indicators for the selected country and range
-start_year, end_year = years
-availability = []
-for name, code in INDICATORS.items():
-    yrs = get_indicator_years(country_code, code, start_year, end_year)
-    if yrs:
-        yrs_str = f"{min(yrs)}-{max(yrs)} ({len(yrs)} years)"
-    else:
-        yrs_str = "No data"
-    availability.append({"Indicator": name, "Code": code, "Available": yrs_str})
-avail_df = pd.DataFrame(availability)
-
+# Availability: compute on demand inside the expander to avoid startup network loops
 with st.expander("📚 Indicator availability for selected country & range"):
-    st.table(avail_df)
+    if st.button("Compute availability"):
+        start_year, end_year = years
+        availability = []
+        missing_indicators = []
+        with st.spinner("Checking indicator availability..."):
+            for name, code in INDICATORS.items():
+                yrs = get_indicator_years(country_code, code, start_year, end_year)
+                if yrs:
+                    yrs_str = f"{min(yrs)}-{max(yrs)} ({len(yrs)} years)"
+                else:
+                    yrs_str = "No data"
+                    missing_indicators.append(name)
+                availability.append({"Indicator": name, "Code": code, "Available": yrs_str})
+        avail_df = pd.DataFrame(availability)
+        st.table(avail_df)
+
+        if missing_indicators:
+            st.warning(
+                f"Non tutti gli indicatori sono disponibili per il paese/intervallo selezionato: {', '.join(missing_indicators)}. "
+                "La validazione della Kaya richiede tutti gli indicatori; prova ad ampliare l'intervallo di anni o a selezionare un altro paese."
+            )
 
 # =========================
 # DATA PROCESS
@@ -251,6 +272,10 @@ df = get_data(country_code, years)
 if df.empty:
     st.error("No data available for the selected country and years. Try expanding the year range or check indicators.")
     st.stop()
+
+# Notify user if CO2 was obtained via fallback
+if "CO2_from_fallback" in df.columns and df["CO2_from_fallback"].any():
+    st.info("CO2 values were reconstructed from EN.ATM.CO2E.PC (per-capita) because the primary CO2 indicator was not available for some years.")
 
 # compute kaya components
 try:
