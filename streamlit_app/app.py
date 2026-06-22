@@ -2,6 +2,8 @@ import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 st.set_page_config(layout="wide")
 
@@ -27,23 +29,74 @@ COUNTRIES = {
 }
 
 # =========================
+# HELPERS
+# =========================
+
+def _requests_session_with_retries(total_retries: int = 3, backoff_factor: float = 0.5):
+    session = requests.Session()
+    retries = Retry(
+        total=total_retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+# =========================
 # DATA LOADING
 # =========================
 
 @st.cache_data
 def fetch_indicator(country, indicator, start, end):
-    url = f"http://api.worldbank.org/v2/country/{country}/indicator/{indicator}?format=json&date={start}:{end}&per_page=1000"
-    response = requests.get(url).json()
+    """Fetch an indicator from the World Bank API and return a DataFrame with columns [year, <indicator>].
 
-    if len(response) < 2:
+    This function uses HTTPS, a requests session with retries, timeout and robust JSON checks.
+    """
+    base = "https://api.worldbank.org/v2"
+    url = f"{base}/country/{country}/indicator/{indicator}?format=json&date={start}:{end}&per_page=1000"
+
+    session = _requests_session_with_retries()
+
+    try:
+        resp = session.get(url, timeout=10)
+    except requests.RequestException as e:
+        # Network error (DNS, timeout, connection error, etc.)
+        st.warning(f"Network error when requesting World Bank API for {indicator}: {e}")
         return pd.DataFrame()
 
-    data = response[1]
-    df = pd.DataFrame(data)
+    if resp.status_code != 200:
+        st.warning(f"World Bank API returned status {resp.status_code} for URL: {url}")
+        return pd.DataFrame()
 
-    df = df[["date", "value"]]
+    try:
+        data = resp.json()
+    except ValueError:
+        st.warning(f"World Bank API returned non-JSON response for URL: {url}")
+        return pd.DataFrame()
+
+    # Expecting a list: [metadata, records]
+    if not isinstance(data, list) or len(data) < 2 or not data[1]:
+        return pd.DataFrame()
+
+    records = data[1]
+    df = pd.DataFrame(records)
+
+    if "date" not in df.columns or "value" not in df.columns:
+        return pd.DataFrame()
+
+    df = df[["date", "value"]].copy()
     df.columns = ["year", indicator]
-    df["year"] = df["year"].astype(int)
+
+    # convert year to int where possible
+    try:
+        df["year"] = df["year"].astype(int)
+    except Exception:
+        df = df[df["year"].str.isdigit()]
+        df["year"] = df["year"].astype(int)
 
     return df
 
@@ -55,22 +108,29 @@ def get_data(country, year_range):
     dfs = []
 
     for name, code in INDICATORS.items():
-        df = fetch_indicator(country, code, start, end)
-        if df.empty:
+        df_ind = fetch_indicator(country, code, start, end)
+        if df_ind.empty:
+            # keep track via warning but continue — we'll decide later which years are usable
+            st.info(f"Indicator {name} ({code}) has no data for {country} in {start}:{end} or request failed.")
             continue
 
-        df.rename(columns={code: name}, inplace=True)
-        dfs.append(df)
+        # rename column from code to human-readable name
+        df_ind.rename(columns={code: name}, inplace=True)
+        dfs.append(df_ind)
 
     if not dfs:
         return pd.DataFrame()
 
+    # merge on year
     df = dfs[0]
     for d in dfs[1:]:
         df = df.merge(d, on="year", how="outer")
 
     df = df.sort_values("year")
-    df = df.dropna()
+
+    # Only drop rows that are missing the core indicators needed for Kaya calculation
+    required = ["Population", "GDP", "Energy", "CO2"]
+    df = df.dropna(subset=required)
 
     return df
 
@@ -80,15 +140,19 @@ def get_data(country, year_range):
 # =========================
 
 def compute_kaya(df):
+    df = df.copy()
 
+    # GDP per capita
     df["GDP_pc"] = df["GDP"] / df["Population"]
 
-    # Energy è per capita → ricostruiamo totale
+    # Energy is per capita -> reconstruct total
     df["Energy_total"] = df["Energy"] * df["Population"]
 
+    # Intensities
     df["Energy_intensity"] = df["Energy_total"] / df["GDP"]
     df["Carbon_intensity"] = df["CO2"] / df["Energy_total"]
 
+    # Reconstructed CO2 via Kaya identity
     df["CO2_reconstructed"] = (
         df["Population"]
         * df["GDP_pc"]
@@ -109,12 +173,17 @@ def plot_variable(df, var):
 
 def plot_normalized(df, var):
     base_year = df["year"].min()
-    base_val = df[df["year"] == base_year][var].values[0]
+    base_vals = df[df["year"] == base_year][var].values
+    if len(base_vals) == 0 or pd.isna(base_vals[0]) or base_vals[0] == 0:
+        st.warning(f"Impossible to normalize: base value for {var} in year {base_year} is missing or zero.")
+        return px.line(df, x="year", y=var, title=f"{var} (raw, base {base_year} not available)")
 
-    df["normalized"] = df[var] / base_val
+    base_val = base_vals[0]
+    d = df.copy()
+    d["normalized"] = d[var] / base_val
 
     return px.line(
-        df,
+        d,
         x="year",
         y="normalized",
         title=f"{var} (normalized to {base_year})"
@@ -144,10 +213,15 @@ country_code = COUNTRIES[country_name]
 df = get_data(country_code, years)
 
 if df.empty:
-    st.error("No data available")
+    st.error("No data available for the selected country and years. Try expanding the year range or check indicators.")
     st.stop()
 
-df = compute_kaya(df)
+# compute kaya components
+try:
+    df = compute_kaya(df)
+except Exception as e:
+    st.error(f"Error computing Kaya identity: {e}")
+    st.stop()
 
 # =========================
 # OUTPUT
