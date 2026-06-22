@@ -247,13 +247,38 @@ with st.expander("📚 Indicator availability for selected country & range"):
         missing_indicators = []
         with st.spinner("Checking indicator availability..."):
             for name, code in INDICATORS.items():
-                yrs = get_indicator_years(country_code, code, start_year, end_year)
-                if yrs:
-                    yrs_str = f"{min(yrs)}-{max(yrs)} ({len(yrs)} years)"
+                # For CO2, also check fallback per-capita indicator and report both
+                if name == "CO2":
+                    yrs_primary = get_indicator_years(country_code, code, start_year, end_year)
+                    yrs_fallback = get_indicator_years(country_code, "EN.ATM.CO2E.PC", start_year, end_year)
+
+                    if yrs_primary:
+                        primary_str = f"KT: {min(yrs_primary)}-{max(yrs_primary)} ({len(yrs_primary)} years)"
+                    else:
+                        primary_str = "No data"
+
+                    if yrs_fallback:
+                        fallback_str = f"PC (fallback): {min(yrs_fallback)}-{max(yrs_fallback)} ({len(yrs_fallback)} years)"
+                    else:
+                        fallback_str = "No data"
+
+                    combined = primary_str
+                    if yrs_fallback and not yrs_primary:
+                        # primary missing but fallback exists: mark as missing indicator (but available via fallback)
+                        combined = f"Fallback used -> {fallback_str}"
+                        missing_indicators.append(name)
+                    elif yrs_fallback and yrs_primary:
+                        combined = f"{primary_str}; fallback available -> {fallback_str}"
+
+                    availability.append({"Indicator": name, "Code": code, "Available": combined, "Fallback": fallback_str if yrs_fallback else ""})
                 else:
-                    yrs_str = "No data"
-                    missing_indicators.append(name)
-                availability.append({"Indicator": name, "Code": code, "Available": yrs_str})
+                    yrs = get_indicator_years(country_code, code, start_year, end_year)
+                    if yrs:
+                        yrs_str = f"{min(yrs)}-{max(yrs)} ({len(yrs)} years)"
+                    else:
+                        yrs_str = "No data"
+                        missing_indicators.append(name)
+                    availability.append({"Indicator": name, "Code": code, "Available": yrs_str, "Fallback": ""})
         avail_df = pd.DataFrame(availability)
         st.table(avail_df)
 
