@@ -146,6 +146,16 @@ def get_data(country, year_range):
     return df
 
 
+@st.cache_data
+def get_indicator_years(country, code, start, end):
+    """Return sorted list of years available for an indicator (in the given date window)."""
+    df = fetch_indicator(country, code, start, end)
+    if df.empty:
+        return []
+    years = sorted(df["year"].astype(int).unique().tolist())
+    return years
+
+
 # =========================
 # KAYA MODEL
 # =========================
@@ -216,6 +226,21 @@ with col2:
     years = st.slider("Years", 1990, 2022, (1990, 2020))
 
 country_code = COUNTRIES[country_name]
+
+# Show availability of indicators for the selected country and range
+start_year, end_year = years
+availability = []
+for name, code in INDICATORS.items():
+    yrs = get_indicator_years(country_code, code, start_year, end_year)
+    if yrs:
+        yrs_str = f"{min(yrs)}-{max(yrs)} ({len(yrs)} years)"
+    else:
+        yrs_str = "No data"
+    availability.append({"Indicator": name, "Code": code, "Available": yrs_str})
+avail_df = pd.DataFrame(availability)
+
+with st.expander("📚 Indicator availability for selected country & range"):
+    st.table(avail_df)
 
 # =========================
 # DATA PROCESS
