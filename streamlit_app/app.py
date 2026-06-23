@@ -10,6 +10,8 @@ st.set_page_config(layout="wide")
 # CONFIG
 # =========================
 
+BASE_YEAR = 1990
+
 INDICATORS = {
     "Population": "SP.POP.TOTL",
     "GDP per capita": "NY.GDP.PCAP.PP.KD",
@@ -23,21 +25,21 @@ ENTITIES = {
     "China": "CHN",
     "India": "IND",
     "USA": "USA",
-    "EU": "EUU",
-    "Russia": "RUS"
+    "European Union": "EUU",
+    "Russian Federation": "RUS"
 }
 
-BASE_YEAR = 1990
-
-# consistent colors per entity
-ENTITY_COLORS = {
+COLORS = {
     "World": "black",
-    "China": "red",
-    "India": "orange",
-    "USA": "blue",
-    "EU": "green",
-    "Russia": "purple"
+    "China": "#d62728",
+    "India": "#ff7f0e",
+    "USA": "#1f77b4",
+    "European Union": "#2ca02c",
+    "Russian Federation": "#9467bd"
 }
+
+LINE_WIDTH_TOP = 3
+LINE_WIDTH_BOTTOM = 1.5
 
 # =========================
 # DATA
@@ -53,20 +55,19 @@ def fetch_indicator(entity, code, years):
     df = pd.DataFrame(data[1])[["date", "value"]]
     df.columns = ["year", "value"]
     df["year"] = df["year"].astype(int)
-
     return df.sort_values("year")
 
 
-def build_variable_dataframe(var_name, code, entities, years):
+def build_df(var_code, entities, years):
 
     df_all = pd.DataFrame()
 
-    for ent_name in entities:
-        df = fetch_indicator(ENTITIES[ent_name], code, years)
+    for name in entities:
+        df = fetch_indicator(ENTITIES[name], var_code, years)
         if df.empty:
             continue
 
-        df = df.rename(columns={"value": ent_name})
+        df = df.rename(columns={"value": name})
 
         if df_all.empty:
             df_all = df
@@ -77,19 +78,38 @@ def build_variable_dataframe(var_name, code, entities, years):
 
 
 # =========================
-# TRANSFORMS
+# DERIVED VARIABLES
+# =========================
+
+def compute_derived(df_pop, df_gdppc, df_energy_int):
+
+    df_gdp = df_pop.copy()
+
+    for c in df_pop.columns:
+        if c == "year": continue
+        df_gdp[c] = df_pop[c] * df_gdppc[c]
+
+    df_energy = df_gdp.copy()
+
+    for c in df_gdp.columns:
+        if c == "year": continue
+        df_energy[c] = df_gdp[c] * df_energy_int[c]
+
+    return df_gdp, df_energy
+
+
+# =========================
+# TRANSFORMATIONS
 # =========================
 
 def normalize(df):
     df_n = df.copy()
 
-    for col in df.columns:
-        if col == "year":
-            continue
-
-        base = df[df["year"] == BASE_YEAR][col]
+    for c in df.columns:
+        if c == "year": continue
+        base = df[df.year == BASE_YEAR][c]
         if not base.empty and base.values[0] != 0:
-            df_n[col] = df[col] / base.values[0]
+            df_n[c] = df[c] / base.values[0]
 
     return df_n
 
@@ -97,20 +117,41 @@ def normalize(df):
 def growth(df):
     df_g = df.copy()
 
-    for col in df.columns:
-        if col == "year":
-            continue
-
-        df_g[col] = df[col].pct_change() * 100
+    for c in df.columns:
+        if c == "year": continue
+        df_g[c] = df[c].pct_change() * 100
 
     return df_g
 
 
 # =========================
-# GENERIC FIGURE (BOOK STYLE)
+# LEGEND WITH 1990 VALUES
 # =========================
 
-def plot_book_style(df, title):
+def build_labels(df):
+
+    labels = {}
+
+    for c in df.columns:
+        if c == "year": continue
+
+        base = df[df.year == BASE_YEAR][c]
+        if not base.empty:
+            val = base.values[0]
+            labels[c] = f"{c} ({val:.2e})"
+        else:
+            labels[c] = c
+
+    return labels
+
+
+# =========================
+# PLOT FUNCTION
+# =========================
+
+def plot_figure(df, title):
+
+    labels = build_labels(df)
 
     df_n = normalize(df)
     df_g = growth(df)
@@ -121,47 +162,42 @@ def plot_book_style(df, title):
         vertical_spacing=0.08
     )
 
-    entities = [c for c in df.columns if c != "year"]
+    for c in df.columns:
+        if c == "year": continue
 
-    # TOP PANEL
-    for e in entities:
         fig.add_trace(
             go.Scatter(
                 x=df_n["year"],
-                y=df_n[e],
-                name=e,
-                line=dict(color=ENTITY_COLORS.get(e, "gray"), width=2)
+                y=df_n[c],
+                name=labels[c],
+                line=dict(color=COLORS[c], width=LINE_WIDTH_TOP)
             ),
             row=1, col=1
         )
 
-    # BOTTOM PANEL
-    for e in entities:
+    for c in df.columns:
+        if c == "year": continue
+
         fig.add_trace(
             go.Scatter(
                 x=df_g["year"],
-                y=df_g[e],
+                y=df_g[c],
                 showlegend=False,
-                line=dict(color=ENTITY_COLORS.get(e, "gray"), dash="solid")
+                line=dict(color=COLORS[c], width=LINE_WIDTH_BOTTOM)
             ),
             row=2, col=1
         )
 
     fig.update_layout(
-        height=750,
         title=title,
-        legend=dict(
-            orientation="h",
-            y=1.02,
-            x=0.01
-        )
+        height=750,
+        legend=dict(orientation="h", x=0, y=1.08)
     )
 
-    fig.update_yaxes(title_text="Normalized (1990 = 1)", row=1, col=1)
-    fig.update_yaxes(title_text="Growth rate (%/year)", row=2, col=1)
-    fig.update_xaxes(title_text="Year", row=2, col=1)
+    fig.update_yaxes(title="Normalized (1990 = 1)", row=1, col=1)
+    fig.update_yaxes(title="Growth rate [%/year]", row=2, col=1)
+    fig.update_xaxes(title="Year", row=2, col=1)
 
-    # grid like book
     fig.update_xaxes(showgrid=True, gridcolor="lightgray")
     fig.update_yaxes(showgrid=True, gridcolor="lightgray")
 
@@ -169,94 +205,37 @@ def plot_book_style(df, title):
 
 
 # =========================
-# DERIVED VARIABLES
-# =========================
-
-def build_derived(df_pop, df_gdppc, df_energy_intensity, df_co2_intensity):
-
-    df = df_pop.copy()
-
-    # GDP = A * B
-    for e in df.columns:
-        if e == "year":
-            continue
-        df[e] = df_pop[e] * df_gdppc[e]
-
-    df_gdp = df.copy()
-
-    # Energy = A * B * C
-    for e in df.columns:
-        if e == "year":
-            continue
-        df[e] = df_gdp[e] * df_energy_intensity[e]
-
-    df_energy = df.copy()
-
-    return df_gdp, df_energy
-
-
-# =========================
 # UI
 # =========================
 
-st.title("🌍 Kaya Identity — Chapter Figures Reproduction")
+st.title("🌍 Kaya Identity — Chapter Figures (High Fidelity)")
 
 entities = st.multiselect(
-    "Select entities",
+    "Entities",
     list(ENTITIES.keys()),
-    default=["World", "China", "USA", "EU"]
+    default=list(ENTITIES.keys())
 )
 
 years = st.slider("Years", 1990, 2022, (1990, 2020))
 
 # =========================
-# EXECUTION
+# RUN
 # =========================
 
-if st.button("Generate Chapter Figures"):
+if st.button("Generate Figures"):
 
-    # ---- BASE VARIABLES ----
-    df_pop = build_variable_dataframe("Population", INDICATORS["Population"], entities, years)
-    df_gdppc = build_variable_dataframe("GDP per capita", INDICATORS["GDP per capita"], entities, years)
-    df_energy_int = build_variable_dataframe("Energy intensity", INDICATORS["Energy intensity"], entities, years)
-    df_co2_int = build_variable_dataframe("CO2 intensity", INDICATORS["CO2 intensity"], entities, years)
-    df_co2 = build_variable_dataframe("CO2 emissions", INDICATORS["CO2 emissions"], entities, years)
+    df_pop = build_df(INDICATORS["Population"], entities, years)
+    df_gdppc = build_df(INDICATORS["GDP per capita"], entities, years)
+    df_energy_int = build_df(INDICATORS["Energy intensity"], entities, years)
+    df_co2_int = build_df(INDICATORS["CO2 intensity"], entities, years)
+    df_co2 = build_df(INDICATORS["CO2 emissions"], entities, years)
 
-    # ---- DERIVED ----
-    df_gdp, df_energy = build_derived(df_pop, df_gdppc, df_energy_int, df_co2_int)
+    df_gdp, df_energy = compute_derived(df_pop, df_gdppc, df_energy_int)
 
-    # =========================
-    # FIGURES
-    # =========================
-
-    st.header("Fig I.7.1 — Population dynamics")
-    st.plotly_chart(plot_book_style(df_pop, "Population dynamics"), use_container_width=True)
-
-    st.header("Fig I.7.4 — GDP per capita dynamics")
-    st.plotly_chart(plot_book_style(df_gdppc, "GDP per capita dynamics"), use_container_width=True)
-
-    st.header("Fig I.7.5 — GDP dynamics")
-    st.plotly_chart(plot_book_style(df_gdp, "GDP dynamics"), use_container_width=True)
-
-    st.header("Fig I.7.6 — Energy intensity dynamics")
-    st.plotly_chart(plot_book_style(df_energy_int, "Energy intensity dynamics"), use_container_width=True)
-
-    st.header("Fig I.7.7 — Energy consumption dynamics")
-    st.plotly_chart(plot_book_style(df_energy, "Energy consumption dynamics"), use_container_width=True)
-
-    st.header("Fig I.7.8 — Emission intensity dynamics")
-    st.plotly_chart(plot_book_style(df_co2_int, "Emission intensity dynamics"), use_container_width=True)
-
-    st.header("Fig I.7.9 — CO2 emissions dynamics")
-    st.plotly_chart(plot_book_style(df_co2, "CO2 emissions dynamics"), use_container_width=True)
-
-    # ---- COMBINED KAYA ----
-    st.header("Fig I.7.10 — Combined Kaya dynamics")
-
-    df_kaya = df_pop.copy()
-
-    for e in entities:
-        df_kaya[e] = df_energy[e]  # energy as main comparable
-
-    fig = plot_book_style(df_kaya, "Combined Kaya dynamics (Energy proxy)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(plot_figure(df_pop, "Fig I.7.1 — Population dynamics"), use_container_width=True)
+    st.plotly_chart(plot_figure(df_gdppc, "Fig I.7.4 — GDP per capita dynamics"), use_container_width=True)
+    st.plotly_chart(plot_figure(df_gdp, "Fig I.7.5 — GDP dynamics"), use_container_width=True)
+    st.plotly_chart(plot_figure(df_energy_int, "Fig I.7.6 — Energy intensity dynamics"), use_container_width=True)
+    st.plotly_chart(plot_figure(df_energy, "Fig I.7.7 — Energy consumption dynamics"), use_container_width=True)
+    st.plotly_chart(plot_figure(df_co2_int, "Fig I.7.8 — Emission intensity dynamics"), use_container_width=True)
+    st.plotly_chart(plot_figure(df_co2, "Fig I.7.9 — CO₂ emissions dynamics"), use_container_width=True)
