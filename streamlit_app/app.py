@@ -233,3 +233,37 @@ if st.button("Generate Figures"):
 
     st.plotly_chart(plot(df_pop, "Fig I.7.1 — Population dynamics", "MPax", 1e6), use_container_width=True)
 
+    st.plotly_chart(plot(df_gdppc, "Fig I.7.4 — GDP per capita dynamics", "k$/pax", 1e3),
+                    use_container_width=True)
+
+    st.plotly_chart(plot(df_gdp,
+        "Fig I.7.5 — GDP dynamics",
+        "G$/y",
+        1e9,
+        note="GDP obtained as Population × GDP per capita (PPP) — conversion to G$/y."
+    ), use_container_width=True)
+
+    st.plotly_chart(plot(df_energy,
+        "Fig I.7.7 — Energy consumption dynamics",
+        "proxy",
+        1,
+        note="Energy consumption estimated as A × B × C. Units differ from Gtoe used in the chapter."
+    ), use_container_width=True)
+
+    st.plotly_chart(plot(df_energy_int,
+        "Fig I.7.6 — Energy intensity dynamics",
+        "Wh/$",
+        1
+    ), use_container_width=True)
+
+    st.plotly_chart(plot(df_co2_int,
+        "Fig I.7.8 — Emission intensity dynamics",
+        "kgCO2/$",
+        1
+    ), use_container_width=True)
+
+    st.plotly_chart(plot(df_co2,
+        "Fig I.7.9 — CO₂ emissions dynamics",
+        "GtCO2/y",
+        1e9
+    ), use_container_width=True)
