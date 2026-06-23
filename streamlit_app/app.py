@@ -281,13 +281,16 @@ def plot(df, title, unit="", factor=1, note=None):
 # TEMPERATURE METRICS FROM CO2
 # =========================
 
-def compute_temperature_metrics(df_co2, years, co2_to_gtoe_factor=7.82, temp_divisor=120.0):
+def compute_temperature_metrics(df_co2, years, mt_to_gt_factor=1000.0, gt_to_ppm_factor=7.82, ppm_to_temp_factor=120.0):
     """
-    Compute for each column in df_co2 (except 'year'):
-      - integrated_gtoe: trapezoidal integral of (CO2 [MtCO2/y] / co2_to_gtoe_factor) over the selected years -> total Gtoe
-      - temp_increase: integrated_gtoe / temp_divisor  (estimated temperature increase over period)
-      - final_derivative: last derivative (°C/year) of the cumulative temperature time series
-    Returns a DataFrame indexed by country/entity with those three values.
+    Compute for each column in df_co2 (except 'year') the following chain:
+      - integrated_MtCO2: trapezoidal integral of CO2 [MtCO2/y] over the selected years -> total MtCO2
+      - integrated_GtCO2: integrated_MtCO2 / mt_to_gt_factor -> total GtCO2
+      - resident_ppm: integrated_GtCO2 / gt_to_ppm_factor -> ppm equivalent
+      - temp_increase_C: resident_ppm / ppm_to_temp_factor -> estimated temperature increase [°C]
+      - final_derivative_C_per_year: last derivative (°C/year) of the cumulative temperature time series
+
+    Returns a DataFrame indexed by country/entity with those values.
     """
     results = []
 
@@ -299,13 +302,15 @@ def compute_temperature_metrics(df_co2, years, co2_to_gtoe_factor=7.82, temp_div
         if s.empty:
             results.append({
                 "entity": c,
-                "integrated_gtoe": np.nan,
+                "integrated_MtCO2": np.nan,
+                "integrated_GtCO2": np.nan,
+                "resident_ppm": np.nan,
                 "temp_increase_C": np.nan,
                 "final_derivative_C_per_year": np.nan
             })
             continue
 
-        # mask to selected years (ensure contiguous years used)
+        # mask to selected years
         mask = (s["year"] >= years[0]) & (s["year"] <= years[1])
         ssel = s[mask].sort_values("year")
         ya = ssel["year"].values
@@ -314,46 +319,56 @@ def compute_temperature_metrics(df_co2, years, co2_to_gtoe_factor=7.82, temp_div
         if len(ya) < 2 or np.all(np.isnan(co2_mt)):
             results.append({
                 "entity": c,
-                "integrated_gtoe": np.nan,
+                "integrated_MtCO2": np.nan,
+                "integrated_GtCO2": np.nan,
+                "resident_ppm": np.nan,
                 "temp_increase_C": np.nan,
                 "final_derivative_C_per_year": np.nan
             })
             continue
 
-        # convert to Gtoe/y
-        gtoe_per_year = co2_mt / co2_to_gtoe_factor
-
-        # integrate over years (Gtoe) using a local trapezoid implementation to avoid np.trapz issues
-        # handle NaNs by masking
-        mask_vals = ~np.isnan(gtoe_per_year) & ~np.isnan(ya)
+        # mask out NaNs
+        mask_vals = ~np.isnan(co2_mt) & ~np.isnan(ya)
         x = ya[mask_vals]
-        y = gtoe_per_year[mask_vals]
+        y_mt = co2_mt[mask_vals]
 
         if len(x) < 2:
-            integrated_gtoe = np.nan
+            integrated_Mt = np.nan
+            integrated_Gt = np.nan
+            resident_ppm = np.nan
             temp_increase = np.nan
             final_derivative = np.nan
         else:
-            # trapezoidal integral
-            integrated_gtoe = np.sum((y[:-1] + y[1:]) * (x[1:] - x[:-1]) / 2.0)
+            # integrate CO2 (MtCO2) over time -> total MtCO2
+            integrated_Mt = np.sum((y_mt[:-1] + y_mt[1:]) * (x[1:] - x[:-1]) / 2.0)
+
+            # convert to GtCO2
+            integrated_Gt = integrated_Mt / mt_to_gt_factor
+
+            # resident ppm equivalent
+            resident_ppm = integrated_Gt / gt_to_ppm_factor
 
             # temperature increase estimate
-            temp_increase = integrated_gtoe / temp_divisor
+            temp_increase = resident_ppm / ppm_to_temp_factor
 
-            # build cumulative integral (up to each available year)
-            cum = np.zeros(len(x))
+            # build cumulative integral (MtCO2 up to each available year)
+            cum_Mt = np.zeros(len(x))
             for i in range(1, len(x)):
-                cum[i] = cum[i-1] + (y[i-1] + y[i]) * (x[i] - x[i-1]) / 2.0
+                cum_Mt[i] = cum_Mt[i-1] + (y_mt[i-1] + y_mt[i]) * (x[i] - x[i-1]) / 2.0
 
-            temp_ts = cum / temp_divisor  # °C time series
+            cum_Gt = cum_Mt / mt_to_gt_factor
+            cum_ppm = cum_Gt / gt_to_ppm_factor
+            temp_ts = cum_ppm / ppm_to_temp_factor  # °C time series
 
-            # compute derivative (°C / year) using numpy.gradient on the available grid
+            # compute derivative (°C / year)
             deriv = np.gradient(temp_ts, x)
             final_derivative = deriv[-1]
 
         results.append({
             "entity": c,
-            "integrated_gtoe": integrated_gtoe,
+            "integrated_MtCO2": integrated_Mt,
+            "integrated_GtCO2": integrated_Gt,
+            "resident_ppm": resident_ppm,
             "temp_increase_C": temp_increase,
             "final_derivative_C_per_year": final_derivative
         })
@@ -434,19 +449,25 @@ if st.button("Generate Figures"):
         df_gdp, df_en_int, df_energy, df_CO2_intensity = derive(df_pop, df_gdppc, df_energy_int, df_CO2)
 
         # --- compute temperature metrics from CO2 ---
-        # Using the requested factors: divide CO2 by 7.82 to get Gtoe/y, then integrated / 120 => temperature increase [°C]
-        temp_metrics = compute_temperature_metrics(df_CO2, years, co2_to_gtoe_factor=7.82, temp_divisor=120.0)
+        # New method:
+        # 1) integrate annual CO2 (MtCO2/y) over the period -> integrated_MtCO2 [MtCO2]
+        # 2) integrated_GtCO2 = integrated_MtCO2 / 1000 -> [GtCO2]
+        # 3) resident_ppm = integrated_GtCO2 / 7.82 -> [ppm CO2]
+        # 4) temp_increase_C = resident_ppm / 120 -> [°C]
+        temp_metrics = compute_temperature_metrics(df_CO2, years, mt_to_gt_factor=1000.0, gt_to_ppm_factor=7.82, ppm_to_temp_factor=120.0)
 
         # Format and show table
         if not temp_metrics.empty:
             display_df = temp_metrics.copy()
             # nice rounding
-            display_df["integrated_gtoe"] = display_df["integrated_gtoe"].map(lambda x: np.round(x, 3) if pd.notna(x) else x)
+            display_df["integrated_MtCO2"] = display_df["integrated_MtCO2"].map(lambda x: np.round(x, 1) if pd.notna(x) else x)
+            display_df["integrated_GtCO2"] = display_df["integrated_GtCO2"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
+            display_df["resident_ppm"] = display_df["resident_ppm"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
             display_df["temp_increase_C"] = display_df["temp_increase_C"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
             display_df["final_derivative_C_per_year"] = display_df["final_derivative_C_per_year"].map(lambda x: np.round(x, 6) if pd.notna(x) else x)
 
             st.subheader("CO2-based temperature metrics (selected entities)")
-            st.write("Method: CO2 [MtCO2/y] -> divide by 7.82 -> Gtoe/y; integrate over period -> total Gtoe; ΔT = total_Gtoe / 120. Final derivative is last-year slope of ΔT curve (°C/year).")
+            st.write("Method: integrate CO2 [MtCO2/y] -> total MtCO2; convert to GtCO2 (/1000); convert to atmospheric ppm (divide by 7.82); ΔT = ppm / 120. Final derivative is last-year slope of ΔT curve (°C/year).")
             st.table(display_df)
 
         # plots
