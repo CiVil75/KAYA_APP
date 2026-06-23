@@ -214,7 +214,7 @@ def plot(df, title, unit="", factor=1, note=None):
 # UI
 # =========================
 
-st.title("🌍 Kaya Identity — Chapter Reproduction (Final Calibration)")
+st.title("🌍 Kaya Identity - Data elaboration from World Development Indicators Dataset - World Bank Group")
 
 entities = st.multiselect(
     "Entities",
@@ -267,7 +267,7 @@ if st.button("Generate Figures"):
     
     st.plotly_chart(plot(df_CO2_intensity,
         "Fig I.7.8 — Emission intensity dynamics",
-        "kgCO2/$",
+        "gCO2/kWh",
         1
     ), use_container_width=True)
 
