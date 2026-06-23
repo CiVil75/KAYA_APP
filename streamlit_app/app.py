@@ -238,7 +238,7 @@ if st.button("Generate Figures"):
     df_co2 = build_df(INDICATORS["CO2 emissions"][0], entities, years)
 
     # derived
-    df_gdp, df_en_int, df_energy, df_CO2_intensity = derive(df_pop, df_gdppc, df_energy_int, df_C02_emissions)
+    df_gdp, df_en_int, df_energy, df_CO2_intensity = derive(df_pop, df_gdppc, df_energy_int, df_CO2_emissions)
 
     st.plotly_chart(plot(df_pop, "Fig I.7.1 — Population dynamics", "MPax", 1e6), use_container_width=True)
 
