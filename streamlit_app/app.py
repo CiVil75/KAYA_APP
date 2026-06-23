@@ -11,10 +11,11 @@ st.set_page_config(layout="wide")
 # =========================
 
 INDICATORS = {
-    "Population": "SP.POP.TOTL",                      # A
-    "GDP per capita": "NY.GDP.PCAP.PP.KD",            # B
-    "Energy intensity": "EG.GDP.PUSE.KO.PP.KD",       # C
-    "CO2 intensity": "EN.GHG.CO2.RT.GDP.PP.KD",       # D proxy
+    "Population": "SP.POP.TOTL",                 # A
+    "GDP per capita": "NY.GDP.PCAP.PP.KD",       # B
+    "Energy intensity": "EG.GDP.PUSE.KO.PP.KD",  # C
+    "CO2 intensity": "EN.GHG.CO2.RT.GDP.PP.KD",  # D
+    "CO2 emissions": "EN.GHG.ALL.LU.MT.CE.AR5"
 }
 
 ENTITIES = {
@@ -22,53 +23,54 @@ ENTITIES = {
     "India": "IND",
     "USA": "USA",
     "EU": "EUU",
-    "World": "WLD"
+    "World": "WLD",
+    "Russia": "RUS"
 }
 
 BASE_YEAR = 1990
 
 # =========================
-# DATA FUNCTION
+# DATA FETCH
 # =========================
 
-def fetch_wdi(country, indicator, start, end):
-    url = f"https://api.worldbank.org/v2/country/{country}/indicator/{indicator}?date={start}:{end}&format=json&per_page=1000"
-    r = requests.get(url).json()
+def fetch_indicator(country, code, years):
+    url = f"https://api.worldbank.org/v2/country/{country}/indicator/{code}?date={years[0]}:{years[1]}&format=json&per_page=1000"
+    data = requests.get(url).json()
 
-    if len(r) < 2:
+    if len(data) < 2:
         return pd.DataFrame()
 
-    df = pd.DataFrame(r[1])
-    df = df[["date", "value"]].rename(columns={"date": "year"})
+    df = pd.DataFrame(data[1])[["date", "value"]]
+    df = df.rename(columns={"date": "year"})
     df["year"] = df["year"].astype(int)
-    df = df.sort_values("year")
 
-    return df
+    return df.sort_values("year")
 
 
-def build_kaya_dataframe(entity, years):
-    data = {}
+def build_dataset(entity, years):
+    df_all = pd.DataFrame()
 
     for name, code in INDICATORS.items():
-        df = fetch_wdi(entity, code, years[0], years[1])
+        df = fetch_indicator(entity, code, years)
         if df.empty:
-            return pd.DataFrame()
+            continue
 
-        data[name] = df["value"].values
-        years_series = df["year"]
+        df = df.rename(columns={"value": name})
 
-    df_all = pd.DataFrame(data)
-    df_all["year"] = years_series.values
+        if df_all.empty:
+            df_all = df
+        else:
+            df_all = pd.merge(df_all, df, on="year", how="outer")
+
+    if df_all.empty:
+        return df_all
 
     # =========================
-    # ENERGY CONSUMPTION (A × B × C)
+    # DERIVED VARIABLES
     # =========================
 
-    df_all["Energy consumption"] = (
-        df_all["Population"] *
-        df_all["GDP per capita"] *
-        df_all["Energy intensity"]
-    )
+    df_all["GDP"] = df_all["Population"] * df_all["GDP per capita"]       # A*B
+    df_all["Energy"] = df_all["GDP"] * df_all["Energy intensity"]         # A*B*C
 
     return df_all
 
@@ -78,100 +80,71 @@ def build_kaya_dataframe(entity, years):
 # =========================
 
 def normalize(df):
-    df = df.copy()
-
+    df_n = df.copy()
     for col in df.columns:
         if col == "year":
             continue
-
         base = df[df["year"] == BASE_YEAR][col]
-        if base.empty or base.values[0] == 0:
-            continue
-
-        df[col] = df[col] / base.values[0]
-
-    return df
+        if not base.empty and base.values[0] != 0:
+            df_n[col] = df[col] / base.values[0]
+    return df_n
 
 
 def growth(df):
-    df = df.copy()
-
+    df_g = df.copy()
     for col in df.columns:
         if col == "year":
             continue
-
-        df[col] = df[col].pct_change() * 100
-
-    return df
+        df_g[col] = df[col].pct_change() * 100
+    return df_g
 
 
 # =========================
-# PLOT FUNCTION
+# GENERIC FIGURE BUILDER
 # =========================
 
-def plot_combined_kaya(df, entity_name):
+def plot_figure(df, variables, title):
 
     df_norm = normalize(df)
     df_growth = growth(df)
 
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        subplot_titles=(
-            f"{entity_name} – Normalized Kaya factors (base 1990)",
-            f"{entity_name} – Growth rates (%/year)"
-        )
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True)
 
-    variables = [
-        "Population",
-        "GDP per capita",
-        "Energy intensity",
-        "CO2 intensity",
-        "Energy consumption"
-    ]
+    # top
+    for v in variables:
+        fig.add_trace(go.Scatter(x=df_norm["year"], y=df_norm[v], name=v), row=1, col=1)
 
-    colors = {
-        "Population": "gold",
-        "GDP per capita": "cyan",
-        "Energy intensity": "green",
-        "CO2 intensity": "red",
-        "Energy consumption": "purple",
-    }
+    # bottom
+    for v in variables:
+        fig.add_trace(go.Scatter(x=df_growth["year"], y=df_growth[v], showlegend=False), row=2, col=1)
 
-    # TOP PANEL
-    for var in variables:
-        fig.add_trace(
-            go.Scatter(
-                x=df_norm["year"],
-                y=df_norm[var],
-                name=var,
-                line=dict(color=colors[var])
-            ),
-            row=1, col=1
-        )
-
-    # BOTTOM PANEL
-    for var in variables:
-        fig.add_trace(
-            go.Scatter(
-                x=df_growth["year"],
-                y=df_growth[var],
-                showlegend=False,
-                line=dict(color=colors[var])
-            ),
-            row=2, col=1
-        )
-
-    fig.update_yaxes(title_text="Normalized (1990=1)", row=1, col=1)
-    fig.update_yaxes(title_text="Growth rate (%)", row=2, col=1)
-    fig.update_xaxes(title_text="Year", row=2, col=1)
-
-    fig.update_layout(height=750)
+    fig.update_layout(height=700, title=title)
 
     return fig
 
+
+# =========================
+# FIGURE DEFINITIONS (CHAPTER MAPPING)
+# =========================
+
+FIGURES = {
+    "Fig I.7.1 – Population": ["Population"],
+    "Fig I.7.4 – GDP per capita": ["GDP per capita"],
+    "Fig I.7.5 – GDP": ["GDP"],
+    "Fig I.7.6 – Energy intensity": ["Energy intensity"],
+    "Fig I.7.7 – Energy consumption": ["Energy"],
+    "Fig I.7.8 – CO2 intensity": ["CO2 intensity"],
+    "Fig I.7.9 – CO2 emissions": ["CO2 emissions"],
+}
+
+# Combined Kaya (Fig I.7.10)
+KAYA_COMBINED = [
+    "Population",
+    "GDP per capita",
+    "Energy intensity",
+    "CO2 intensity",
+    "Energy"
+]
 
 # =========================
 # UI
@@ -179,43 +152,46 @@ def plot_combined_kaya(df, entity_name):
 
 st.title("🌍 Kaya Explorer – Full Chapter Reproduction")
 
-st.markdown("""
-This version reproduces **Figure I.7.10-style combined Kaya dynamics**:
-
-- Population (A)
-- GDP per capita (B)
-- Energy intensity (C)
-- Carbon intensity (D)
-- ✅ Energy consumption (A × B × C)
-
-All plots:
-- Top → normalized to 1990
-- Bottom → growth rates
-""")
-
 entities = st.multiselect(
-    "Select entities",
-    list(ENTITIES.keys()),
+    "Select entities", list(ENTITIES.keys()),
     default=["World", "China", "USA", "EU"]
 )
 
 years = st.slider("Years", 1990, 2022, (1990, 2020))
 
 # =========================
-# EXECUTION
+# RUN
 # =========================
 
-if st.button("Run Kaya Analysis"):
+if st.button("Run full chapter reproduction"):
 
-    for entity in entities:
+    for entity_name in entities:
 
-        st.header(entity)
+        st.header(f"=== {entity_name} ===")
 
-        df = build_kaya_dataframe(ENTITIES[entity], years)
+        df = build_dataset(ENTITIES[entity_name], years)
 
         if df.empty:
-            st.warning(f"No data for {entity}")
+            st.warning(f"No data for {entity_name}")
             continue
 
-        fig = plot_combined_kaya(df, entity)
-        st.plotly_chart(fig, use_container_width=True)
+        # ---- SINGLE FIGURES ----
+        for fig_name, variables in FIGURES.items():
+
+            if all(v in df.columns for v in variables):
+                fig = plot_figure(df, variables, f"{fig_name} – {entity_name}")
+                st.plotly_chart(fig, use_container_width=True)
+
+        # ---- COMBINED KAYA ----
+        st.subheader("Fig I.7.10 – Combined Kaya dynamics")
+
+        if all(v in df.columns for v in KAYA_COMBINED):
+            fig = plot_figure(df, KAYA_COMBINED, f"Kaya Combined – {entity_name}")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # ---- APPROX FIG I.7.11 ----
+        st.subheader("Fig I.7.11 – CO2 dynamic focus")
+
+        if "CO2 emissions" in df.columns:
+            fig = plot_figure(df, ["CO2 emissions"], f"CO2 dynamics – {entity_name}")
+            st.plotly_chart(fig, use_container_width=True)
