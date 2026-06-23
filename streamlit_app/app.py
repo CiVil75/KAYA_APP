@@ -75,7 +75,7 @@ def build_df(code, entities, years):
 # DERIVED
 # =========================
 
-def derive(df_pop, df_gdppc, df_energy_int, df_CO2_emission):
+def derive(df_pop, df_gdppc, df_energy_int, df_CO2_emissions):
 
     df_gdp = df_pop.copy()
     for c in df_pop.columns:
@@ -92,13 +92,13 @@ def derive(df_pop, df_gdppc, df_energy_int, df_CO2_emission):
         if c == "year": continue
         df_energy[c] = df_gdp[c] * df_en_int[c] / 11630 / 1e12
 
-    df_CO2_em_int = df_CO2_emission.copy()
+    df_CO2_intensity = df_CO2_emissions.copy()
     for c in df_gdp.columns:
         if c == "year": continue
-        df_CO2_em_int[c] = df_C02_em[c] * df_enenergy[c]
+        df_CO2_em_intensity[c] = df_C02_em[c] * df_enenergy[c]
 
     
-    return df_gdp, df_en_int, df_energy, df_CO2_em_int
+    return df_gdp, df_en_int, df_energy, df_CO2_intensity
 
 
 # =========================
@@ -235,11 +235,10 @@ if st.button("Generate Figures"):
     df_pop = build_df(INDICATORS["Population"][0], entities, years)
     df_gdppc = build_df(INDICATORS["GDP per capita"][0], entities, years)
     df_energy_int = build_df(INDICATORS["Energy intensity"][0], entities, years)
-    df_co2_int = build_df(INDICATORS["CO2 intensity"][0], entities, years)
     df_co2 = build_df(INDICATORS["CO2 emissions"][0], entities, years)
 
     # derived
-    df_gdp, df_en_int, df_energy, df_CO2_em_int = derive(df_pop, df_gdppc, df_energy_int, df_C02_emission)
+    df_gdp, df_en_int, df_energy, df_CO2_intensity = derive(df_pop, df_gdppc, df_energy_int, df_C02_emissions)
 
     st.plotly_chart(plot(df_pop, "Fig I.7.1 — Population dynamics", "MPax", 1e6), use_container_width=True)
 
