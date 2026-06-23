@@ -15,7 +15,7 @@ FINAL_YEAR = 2020
 
 INDICATORS = {
     "Population": ("SP.POP.TOTL", "MPax", 1e6),
-    "GDP per capita": ("NY.GDP.MKTP.PP.KD", "k$/pax", 1e3),
+    "GDP per capita": ("NY.GDP.PCAP.PP.CD", "k$/pax", 1e3),
     "Energy intensity": ("EG.GDP.PUSE.KO.PP.KD", "Wh/$", 1),
     "CO2 intensity": ("EN.GHG.CO2.RT.GDP.PP.KD", "kgCO2/$", 1),
     "CO2 emissions": ("EN.GHG.ALL.LU.MT.CE.AR5", "GtCO2/y", 1e9)
