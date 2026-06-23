@@ -124,7 +124,7 @@ def growth(df):
 
 
 # =========================
-# LEGEND FINAL VALUES (2020)
+# LEGEND FINAL VALUES
 # =========================
 
 def build_labels(df, unit, factor):
