@@ -88,12 +88,10 @@ def derive(df_pop, df_gdppc, df_energy_int):
         if c == "year": continue
         df_en_int[c] = 1 / df_energy_int[c] * 11630 
     
-    df_energy_int=df_en_int.copy()
-
     df_energy = df_gdp.copy()
     for c in df_gdp.columns:
         if c == "year": continue
-        df_energy[c] = df_gdp[c] * df_energy_int[c]
+        df_energy[c] = df_gdp[c] * df_en_int[c]
 
     return df_gdp, df_energy
 
@@ -250,19 +248,19 @@ if st.button("Generate Figures"):
         note="GDP obtained as Population × GDP per capita (PPP) — conversion to G$/y."
     ), use_container_width=True)
 
+    st.plotly_chart(plot(df_en_int,
+        "Fig I.7.6 — Energy intensity dynamics",
+        "Wh/$",
+        1
+    ), use_container_width=True)
+
     st.plotly_chart(plot(df_energy,
         "Fig I.7.7 — Energy consumption dynamics",
         "proxy",
         1,
         note="Energy consumption estimated as A × B × C. Units differ from Gtoe used in the chapter."
     ), use_container_width=True)
-
-    st.plotly_chart(plot(df_energy_int,
-        "Fig I.7.6 — Energy intensity dynamics",
-        "Wh/$",
-        1
-    ), use_container_width=True)
-
+    
     st.plotly_chart(plot(df_co2_int,
         "Fig I.7.8 — Emission intensity dynamics",
         "kgCO2/$",
