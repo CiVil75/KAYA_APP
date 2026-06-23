@@ -265,13 +265,13 @@ if st.button("Generate Figures"):
         note="Energy consumption estimated as A × B × C. Units differ from Gtoe used in the chapter."
     ), use_container_width=True)
     
-    st.plotly_chart(plot(df_co2_int,
+    st.plotly_chart(plot(df_CO2_intensity,
         "Fig I.7.8 — Emission intensity dynamics",
         "kgCO2/$",
         1
     ), use_container_width=True)
 
-    st.plotly_chart(plot(df_co2,
+    st.plotly_chart(plot(df_CO2,
         "Fig I.7.9 — CO₂ emissions dynamics",
         "GtCO2/y",
         1e9
