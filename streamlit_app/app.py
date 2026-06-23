@@ -323,19 +323,33 @@ def compute_temperature_metrics(df_co2, years, co2_to_gtoe_factor=7.82, temp_div
         # convert to Gtoe/y
         gtoe_per_year = co2_mt / co2_to_gtoe_factor
 
-        # integrate over years (Gtoe) using trapezoidal rule
-        integrated_gtoe = np.trapz(gtoe_per_year, ya)
+        # integrate over years (Gtoe) using a local trapezoid implementation to avoid np.trapz issues
+        # handle NaNs by masking
+        mask_vals = ~np.isnan(gtoe_per_year) & ~np.isnan(ya)
+        x = ya[mask_vals]
+        y = gtoe_per_year[mask_vals]
 
-        # temperature increase estimate
-        temp_increase = integrated_gtoe / temp_divisor
+        if len(x) < 2:
+            integrated_gtoe = np.nan
+            temp_increase = np.nan
+            final_derivative = np.nan
+        else:
+            # trapezoidal integral
+            integrated_gtoe = np.sum((y[:-1] + y[1:]) * (x[1:] - x[:-1]) / 2.0)
 
-        # build cumulative temperature time series (cum integral up to each year)
-        cum_integral = np.array([np.trapz(gtoe_per_year[:i+1], ya[:i+1]) for i in range(len(ya))])
-        temp_ts = cum_integral / temp_divisor  # °C time series
+            # temperature increase estimate
+            temp_increase = integrated_gtoe / temp_divisor
 
-        # compute derivative (°C / year)
-        deriv = np.gradient(temp_ts, ya)
-        final_derivative = deriv[-1]
+            # build cumulative integral (up to each available year)
+            cum = np.zeros(len(x))
+            for i in range(1, len(x)):
+                cum[i] = cum[i-1] + (y[i-1] + y[i]) * (x[i] - x[i-1]) / 2.0
+
+            temp_ts = cum / temp_divisor  # °C time series
+
+            # compute derivative (°C / year) using numpy.gradient on the available grid
+            deriv = np.gradient(temp_ts, x)
+            final_derivative = deriv[-1]
 
         results.append({
             "entity": c,
