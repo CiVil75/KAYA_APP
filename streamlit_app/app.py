@@ -439,38 +439,33 @@ if st.button("Generate Figures"):
     if not entities:
         st.warning("Please select at least one entity to fetch data.")
     else:
-        # base
-        df_pop = build_df(INDICATORS["Population"][0], entities_map if False else entities, years)
-        df_gdppc = build_df(INDICATORS["GDP per capita"][0], entities_map if False else entities, years)
-        df_energy_int = build_df(INDICATORS["Energy intensity"][0], entities_map if False else entities, years)
-        df_CO2 = build_df(INDICATORS["CO2 emissions"][0], entities_map if False else entities, years)
+        # base (for plotting) - use only user-selected entities
+        df_pop = build_df(INDICATORS["Population"][0], entities, years)
+        df_gdppc = build_df(INDICATORS["GDP per capita"][0], entities, years)
+        df_energy_int = build_df(INDICATORS["Energy intensity"][0], entities, years)
+        df_CO2 = build_df(INDICATORS["CO2 emissions"][0], entities, years)
 
         # derived
         df_gdp, df_en_int, df_energy, df_CO2_intensity = derive(df_pop, df_gdppc, df_energy_int, df_CO2)
 
+        # Determine display name for World (if present in entities_map)
+        world_name = None
+        for n, iso in entities_map.items():
+            if iso == "WLD" or n.lower() == "world":
+                world_name = n
+                break
+
         # --- compute temperature metrics from CO2 ---
-        # New method:
-        # 1) integrate annual CO2 (MtCO2/y) over the period -> integrated_MtCO2 [MtCO2]
-        # 2) integrated_GtCO2 = integrated_MtCO2 / 1000 -> [GtCO2]
-        # 3) resident_ppm = integrated_GtCO2 / 7.82 -> [ppm CO2]
-        # 4) temp_increase_C = resident_ppm / 120 -> [°C]
-        temp_metrics = compute_temperature_metrics(df_CO2, years, mt_to_gt_factor=1000.0, gt_to_ppm_factor=7.82, ppm_to_temp_factor=120.0)
+        # Ensure World is included in the metrics table even if not selected
+        entities_for_metrics = list(entities)
+        if world_name and world_name not in entities_for_metrics:
+            entities_for_metrics.append(world_name)
 
-        # Format and show table
-        if not temp_metrics.empty:
-            display_df = temp_metrics.copy()
-            # nice rounding
-            display_df["integrated_MtCO2"] = display_df["integrated_MtCO2"].map(lambda x: np.round(x, 1) if pd.notna(x) else x)
-            display_df["integrated_GtCO2"] = display_df["integrated_GtCO2"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
-            display_df["resident_ppm"] = display_df["resident_ppm"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
-            display_df["temp_increase_C"] = display_df["temp_increase_C"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
-            display_df["final_derivative_C_per_year"] = display_df["final_derivative_C_per_year"].map(lambda x: np.round(x, 6) if pd.notna(x) else x)
+        df_CO2_metrics = build_df(INDICATORS["CO2 emissions"][0], entities_for_metrics, years)
 
-            st.subheader("CO2-based temperature metrics (selected entities)")
-            st.write("Method: integrate CO2 [MtCO2/y] -> total MtCO2; convert to GtCO2 (/1000); convert to atmospheric ppm (divide by 7.82); ΔT = ppm / 120. Final derivative is last-year slope of ΔT curve (°C/year).")
-            st.table(display_df)
+        temp_metrics = compute_temperature_metrics(df_CO2_metrics, years, mt_to_gt_factor=1000.0, gt_to_ppm_factor=7.82, ppm_to_temp_factor=120.0)
 
-        # plots
+        # plots (keep these before the table per your request)
         st.plotly_chart(plot(df_pop, "A — Population", "MPax", 1e6), use_container_width=True)
         st.plotly_chart(plot(df_gdppc, "B — GDP (PPP) per capita", "k$/pax", 1e3), use_container_width=True)
         st.plotly_chart(plot(df_gdp, "Ec — GDP dynamics", "G$/y", 1e9), use_container_width=True)
@@ -478,3 +473,55 @@ if st.button("Generate Figures"):
         st.plotly_chart(plot(df_energy, "En — Energy consumption", "Mtoe/y", 1), use_container_width=True)
         st.plotly_chart(plot(df_CO2_intensity, "D — Emission intensity", "gCO2/kWh", 1e-3), use_container_width=True)
         st.plotly_chart(plot(df_CO2, "Em — CO₂ emissions", "MtCO2/y", 1), use_container_width=True)
+
+        # Format and show table AFTER plots
+        if not temp_metrics.empty:
+            display_df = temp_metrics.copy()
+
+            # Compute percentages relative to World values (if World exists)
+            if world_name and world_name in display_df.index:
+                world_vals = display_df.loc[world_name]
+                pct_cols = {}
+                for col in ["integrated_MtCO2", "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]:
+                    w = world_vals.get(col, np.nan)
+                    if pd.notna(w) and w != 0:
+                        display_df[f"pct_of_world_{col}"] = display_df[col] / w * 100
+                    else:
+                        display_df[f"pct_of_world_{col}"] = np.nan
+            else:
+                # no world values available
+                for col in ["integrated_MtCO2", "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]:
+                    display_df[f"pct_of_world_{col}"] = np.nan
+
+            # rounding and ordering
+            display_df["integrated_MtCO2"] = display_df["integrated_MtCO2"].map(lambda x: np.round(x, 1) if pd.notna(x) else x)
+            display_df["integrated_GtCO2"] = display_df["integrated_GtCO2"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
+            display_df["resident_ppm"] = display_df["resident_ppm"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
+            display_df["temp_increase_C"] = display_df["temp_increase_C"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
+            display_df["final_derivative_C_per_year"] = display_df["final_derivative_C_per_year"].map(lambda x: np.round(x, 6) if pd.notna(x) else x)
+
+            for col in [f"pct_of_world_{c}" for c in ["integrated_MtCO2", "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]]:
+                display_df[col] = display_df[col].map(lambda x: np.round(x, 2) if pd.notna(x) else x)
+
+            # ensure World row is present and show world first
+            if world_name and world_name in display_df.index:
+                # reorder so World appears first, then selected entities (unique)
+                ordered = [world_name] + [e for e in entities_for_metrics if e != world_name and e in display_df.index]
+                display_df = display_df.reindex(ordered)
+
+            st.subheader("CO2-based temperature metrics (selected entities)")
+            st.write("Method: integrate CO2 [MtCO2/y] -> total MtCO2; convert to GtCO2 (/1000); convert to atmospheric ppm (divide by 7.82); ΔT = ppm / 120. Percent columns show each value as % of the World value.")
+
+            # show a subset of columns in a sensible order
+            cols_order = [
+                "integrated_MtCO2", "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year",
+                "pct_of_world_integrated_MtCO2", "pct_of_world_integrated_GtCO2", "pct_of_world_resident_ppm", "pct_of_world_temp_increase_C", "pct_of_world_final_derivative_C_per_year"
+            ]
+
+            # some columns may be missing if metrics couldn't be computed; keep only existing
+            cols_order = [c for c in cols_order if c in display_df.columns]
+
+            st.table(display_df[cols_order])
+
+        else:
+            st.warning("No temperature metrics computed — check data availability for the selected entities and years.")
