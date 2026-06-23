@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 st.set_page_config(layout="wide")
 
 BASE_YEAR = 1990
-FINAL_YEAR = 2020 
+FINAL_YEAR = 2022 
 
 # =========================
 # INDICATORS
@@ -105,11 +105,11 @@ def derive(df_pop, df_gdppc, df_energy_int, df_CO2):
 # NORMALIZATION
 # =========================
 
-def normalize(df):
+def normalize(df, years):
     df_n = df.copy()
     for c in df.columns:
         if c == "year": continue
-        base = df[df.year == BASE_YEAR][c]
+        base = df[df.year == years[0]][c]
         if not base.empty and base.values[0] != 0:
             df_n[c] = df[c] / base.values[0]
     return df_n
@@ -127,14 +127,14 @@ def growth(df):
 # LEGEND FINAL VALUES
 # =========================
 
-def build_labels(df, unit, factor):
+def build_labels(df, unit, factor, years):
 
     labels = {}
 
     for c in df.columns:
         if c == "year": continue
 
-        val = df[df.year <= FINAL_YEAR][c].dropna()
+        val = df[df.year <= years[1]][c].dropna()
         if len(val) > 0:
             v = val.iloc[-1] / factor
 
@@ -157,9 +157,9 @@ def plot(df, title, unit="", factor=1, note=None):
     if note:
         st.warning(note)
 
-    labels = build_labels(df, unit, factor)
+    labels = build_labels(df, unit, factor, years)
 
-    df_n = normalize(df)
+    df_n = normalize(df, years)
     df_g = growth(df)
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True)
