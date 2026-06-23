@@ -268,7 +268,7 @@ if st.button("Generate Figures"):
     st.plotly_chart(plot(df_CO2_intensity,
         "Fig I.7.8 — Emission intensity dynamics",
         "gCO2/kWh",
-        1
+        1e3
     ), use_container_width=True)
 
     st.plotly_chart(plot(df_CO2,
