@@ -93,7 +93,7 @@ def derive(df_pop, df_gdppc, df_energy_int):
         if c == "year": continue
         df_energy[c] = df_gdp[c] * df_en_int[c]
 
-    return df_gdp, df_energy
+    return df_gdp, df_en_int, df_energy
 
 
 # =========================
