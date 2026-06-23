@@ -26,8 +26,8 @@ INDICATORS = {
     "Commercial_energy_share_coal_pct": "EG.USE.COMM.CL.ZS",
 }
 
-# Top ~60 countries by population (display name -> ISO3). This list is a convenience subset.
-TOP60 = {
+# Top ~60 countries by population (display name -> ISO3), plus region codes World and European Union
+ENTITIES = {
     "China": "CHN",
     "India": "IND",
     "United States": "USA",
@@ -85,19 +85,10 @@ TOP60 = {
     "Taiwan": "TWN",
     "Syria": "SYR",
     "Romania": "ROU",
+    # Region / aggregate codes supported by WDI
+    "World": "WLD",
+    "European Union": "EUU",
 }
-
-# Predefined groups (each group maps to a list of ISO3 codes drawn from TOP60 when appropriate)
-GROUPS = {
-    "World (top60 subset)": list(TOP60.values()),
-    "European Union (subset)": ["DEU", "FRA", "ITA", "ESP", "POL"],
-    "Africa (subset)": [c for c in TOP60.values() if c in {"NGA", "EGY", "ZAF", "DZA", "SDN", "MAR", "MOZ", "CMR", "CIV", "UGA", "KEN", "TZA", "MDG"}],
-    "Asia (subset)": [c for c in TOP60.values() if c in {"CHN", "IND", "IDN", "PAK", "BGD", "VNM", "MMR", "THA", "KOR", "IRN", "SAU", "TWN", "SYR", "UZB"}],
-    "Latin America (subset)": [c for c in TOP60.values() if c in {"BRA", "MEX", "COL", "ARG", "PER", "VEN"}],
-    "Oceania (subset)": ["AUS"],
-}
-
-# Conversion constants (kept for potential group-weighting using Population)
 
 # =========================
 # HELPERS
@@ -160,7 +151,7 @@ def fetch_indicator(country, indicator, start, end):
 
 @st.cache_data
 def get_data(country, year_range, indicators_map):
-    """Return merged DataFrame of selected indicators for the given country and year range."""
+    """Return merged DataFrame of the focused indicators for the given country/region and year range."""
     start, end = year_range
 
     dfs = []
@@ -182,59 +173,6 @@ def get_data(country, year_range, indicators_map):
 
     df = df.sort_values("year").reset_index(drop=True)
     return df
-
-
-def aggregate_group_members(dfs, group_name):
-    """Aggregate a list of country DataFrames (each with year + indicators) into a single group DataFrame.
-
-    Heuristic:
-    - For per-capita or percent indicators (detected by keywords), compute population-weighted average when Population is available.
-    - Otherwise sum numeric indicators across members.
-    """
-    if not dfs:
-        return pd.DataFrame()
-
-    # concat with country label if present
-    all_df = pd.concat(dfs, ignore_index=True, sort=False)
-    # ensure year is int
-    all_df["year"] = all_df["year"].astype(int)
-
-    numeric_cols = [c for c in all_df.columns if c != "year" and c != "country"]
-
-    result_rows = []
-    for year, group in all_df.groupby("year"):
-        row = {"year": int(year)}
-        # population sum for weighting
-        pop_sum = None
-        if "Population" in numeric_cols:
-            pop_sum = pd.to_numeric(group["Population"], errors="coerce").sum()
-        for col in numeric_cols:
-            vals = pd.to_numeric(group[col], errors="coerce")
-            if vals.dropna().empty:
-                row[col] = None
-                continue
-            # detect per-capita / percent indicators by name
-            lname = col.lower()
-            if ("per" in lname) or ("pc" in lname) or ("pct" in lname) or ("per_capita" in lname) or ("%" in lname) or ("_pc" in lname):
-                # try population-weighted average if population exists
-                if "Population" in group.columns and pop_sum and pop_sum > 0:
-                    weights = pd.to_numeric(group["Population"], errors="coerce")
-                    valid = (~vals.isna()) & (~weights.isna())
-                    if valid.any():
-                        weighted = (vals[valid] * weights[valid]).sum() / weights[valid].sum()
-                        row[col] = float(weighted)
-                        continue
-                # fallback to simple mean
-                row[col] = float(vals.mean())
-            else:
-                # sum totals
-                row[col] = float(vals.sum())
-        result_rows.append(row)
-
-    if not result_rows:
-        return pd.DataFrame()
-    out = pd.DataFrame(result_rows).sort_values("year")
-    return out
 
 
 def make_entity_series(entity_name, df):
@@ -262,70 +200,47 @@ def make_entity_series(entity_name, df):
 # UI
 # =========================
 
-st.title("🌍 Kaya Explorer — focused indicators, 4-country selection + groups")
+st.title("🌍 Kaya Explorer — focused indicators, default entities")
 
-st.markdown("This view automatically fetches the full focused set of indicators and graphs them for the selected countries and groups.")
+st.markdown(
+    "This view automatically fetches the focused WDI indicators and compares a default set of entities.\n\n"
+    "You can override selection (up to 6 entities) from the provided list including two region codes (World, European Union)."
+)
 
 col1, col2 = st.columns(2)
 with col1:
-    selected_countries = st.multiselect("Select up to 4 countries (from top ~60 by population)", list(TOP60.keys()), default=["United States", "China"])
+    selected_entities = st.multiselect(
+        "Select up to 6 entities (countries or region codes)", list(ENTITIES.keys()),
+        default=["United States", "European Union", "World", "China", "India", "Russia"]
+    )
 with col2:
     years = st.slider("Years", 1960, 2022, (1990, 2020))
 
-group_options = list(GROUPS.keys())
-col3, col4 = st.columns(2)
-with col3:
-    group_a = st.selectbox("Group A (optional)", ["None"] + group_options, index=0)
-with col4:
-    group_b = st.selectbox("Group B (optional)", ["None"] + group_options, index=0)
-
-# Enforce max 4 countries
-if len(selected_countries) > 4:
-    st.error("Please select at most 4 countries.")
+# Enforce max 6 entities
+if len(selected_entities) > 6:
+    st.error("Please select at most 6 entities.")
     st.stop()
 
 # Always fetch all indicators (no per-indicator selection)
 ind_map = INDICATORS.copy()
 
 if st.button("Load and plot all indicators"):
-    if not selected_countries and group_a == "None" and group_b == "None":
-        st.error("Choose at least one country or group to visualize.")
+    if not selected_entities:
+        st.error("Choose at least one entity to visualize.")
         st.stop()
 
     start_year, end_year = years
     entities_dfs = []  # list of tuples (label, df)
 
-    with st.spinner("Fetching data for selected countries..."):
-        # fetch for each selected country
-        for cname in selected_countries:
-            ccode = TOP60.get(cname, cname)
-            df = get_data(ccode, (start_year, end_year), ind_map)
+    with st.spinner("Fetching data for selected entities..."):
+        for label in selected_entities:
+            code = ENTITIES.get(label, label)
+            df = get_data(code, (start_year, end_year), ind_map)
             if df.empty:
-                st.warning(f"No data for {cname} in the selected range.")
+                st.warning(f"No data for {label} ({code}) in the selected range.")
                 continue
-            df["country"] = cname
-            entities_dfs.append((cname, df))
-
-        # handle groups by aggregating their members
-        for g_label in (group_a, group_b):
-            if not g_label or g_label == "None":
-                continue
-            members = GROUPS.get(g_label, [])
-            member_dfs = []
-            for iso3 in members:
-                dfm = get_data(iso3, (start_year, end_year), ind_map)
-                if dfm.empty:
-                    continue
-                dfm["country"] = iso3
-                member_dfs.append(dfm)
-            if not member_dfs:
-                st.warning(f"No member data available for group {g_label} in the selected range.")
-                continue
-            agg = aggregate_group_members(member_dfs, g_label)
-            if agg.empty:
-                st.warning(f"Aggregation produced no data for {g_label}.")
-                continue
-            entities_dfs.append((g_label, agg))
+            df["entity"] = label
+            entities_dfs.append((label, df))
 
     if not entities_dfs:
         st.error("No data available to plot after fetching. Try expanding the year range or selecting different entities.")
@@ -345,7 +260,6 @@ if st.button("Load and plot all indicators"):
     tidy = pd.concat(series_list, ignore_index=True, sort=False)
 
     st.subheader("Plots for all indicators")
-    # For each indicator, plot comparison across entities
     for indicator in ind_map.keys():
         sub = tidy[tidy["indicator"] == indicator]
         if sub.empty:
@@ -358,4 +272,4 @@ if st.button("Load and plot all indicators"):
         st.dataframe(tidy.head(500))
 
 else:
-    st.info("Click 'Load and plot all indicators' to fetch the focused WDI indicators for the chosen countries and groups.")
+    st.info("Click 'Load and plot all indicators' to fetch the focused WDI indicators for the chosen entities.")
