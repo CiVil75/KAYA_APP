@@ -11,7 +11,7 @@ st.set_page_config(layout="wide")
 # CONFIG
 # =========================
 
-# Focused list of WDI indicators (human name -> code) per user request
+# Focused list of WDI indicators (human name -> code)
 INDICATORS = {
     "GHG_total_AR5 (Mt CO2e)": "EN.GHG.ALL.LU.MT.CE.AR5",
     "GHG_per_capita_AR5 (t CO2e per person)": "EN.GHG.ALL.PC.CE.AR5",
@@ -26,26 +26,78 @@ INDICATORS = {
     "Commercial_energy_share_coal_pct": "EG.USE.COMM.CL.ZS",
 }
 
-# Sample set of countries. Keep short to avoid UI overwhelm — users can add codes via the extra input.
-COUNTRIES = {
-    "USA": "USA",
+# Top ~60 countries by population (display name -> ISO3). This list is a convenience subset.
+TOP60 = {
     "China": "CHN",
     "India": "IND",
-    "Italy": "ITA",
-    "Germany": "DEU",
-    "France": "FRA",
-    "United Kingdom": "GBR",
-    "Brazil": "BRA",
-    "South Africa": "ZAF",
+    "United States": "USA",
     "Indonesia": "IDN",
+    "Pakistan": "PAK",
+    "Brazil": "BRA",
+    "Nigeria": "NGA",
+    "Bangladesh": "BGD",
+    "Russia": "RUS",
+    "Mexico": "MEX",
+    "Japan": "JPN",
+    "Ethiopia": "ETH",
+    "Philippines": "PHL",
+    "Egypt": "EGY",
+    "Vietnam": "VNM",
+    "DR Congo": "COD",
+    "Turkey": "TUR",
+    "Iran": "IRN",
+    "Germany": "DEU",
+    "Thailand": "THA",
+    "United Kingdom": "GBR",
+    "France": "FRA",
+    "Italy": "ITA",
+    "South Africa": "ZAF",
+    "Tanzania": "TZA",
+    "Myanmar": "MMR",
+    "South Korea": "KOR",
+    "Colombia": "COL",
+    "Kenya": "KEN",
+    "Spain": "ESP",
+    "Argentina": "ARG",
+    "Algeria": "DZA",
+    "Sudan": "SDN",
+    "Ukraine": "UKR",
+    "Uganda": "UGA",
+    "Iraq": "IRQ",
+    "Poland": "POL",
+    "Canada": "CAN",
+    "Morocco": "MAR",
+    "Saudi Arabia": "SAU",
+    "Uzbekistan": "UZB",
+    "Peru": "PER",
+    "Angola": "AGO",
+    "Malaysia": "MYS",
+    "Mozambique": "MOZ",
+    "Ghana": "GHA",
+    "Yemen": "YEM",
+    "Nepal": "NPL",
+    "Venezuela": "VEN",
+    "Madagascar": "MDG",
+    "Cameroon": "CMR",
+    "Côte d'Ivoire": "CIV",
+    "North Korea": "PRK",
+    "Australia": "AUS",
+    "Taiwan": "TWN",
+    "Syria": "SYR",
+    "Romania": "ROU",
 }
 
-# Conversion constants (to kg oil equivalent)
-TOE_TO_KG_OIL_EQ = 1000.0            # 1 toe = 1000 kg oil-equivalent
-KTOE_TO_KG_OIL_EQ = 1_000_000.0      # 1 ktoe = 1,000 toe = 1,000,000 kg
-MWH_TO_KG_OIL_EQ = 85.98             # 1 MWh ≈ 0.08598 toe -> *1000 = 85.98 kg
-KWH_TO_KG_OIL_EQ = MWH_TO_KG_OIL_EQ / 1000.0
-GJ_TO_KG_OIL_EQ = 23.9               # 1 GJ ≈ 0.0239 toe -> *1000 = 23.9 kg
+# Predefined groups (each group maps to a list of ISO3 codes drawn from TOP60 when appropriate)
+GROUPS = {
+    "World (top60 subset)": list(TOP60.values()),
+    "European Union (subset)": ["DEU", "FRA", "ITA", "ESP", "POL"],
+    "Africa (subset)": [c for c in TOP60.values() if c in {"NGA", "EGY", "ZAF", "DZA", "SDN", "MAR", "MOZ", "CMR", "CIV", "UGA", "KEN", "TZA", "MDG"}],
+    "Asia (subset)": [c for c in TOP60.values() if c in {"CHN", "IND", "IDN", "PAK", "BGD", "VNM", "MMR", "THA", "KOR", "IRN", "SAU", "TWN", "SYR", "UZB"}],
+    "Latin America (subset)": [c for c in TOP60.values() if c in {"BRA", "MEX", "COL", "ARG", "PER", "VEN"}],
+    "Oceania (subset)": ["AUS"],
+}
+
+# Conversion constants (kept for potential group-weighting using Population)
 
 # =========================
 # HELPERS
@@ -65,13 +117,8 @@ def _requests_session_with_retries(total_retries: int = 3, backoff_factor: float
     return session
 
 
-# =========================
-# DATA LOADING
-# =========================
-
 @st.cache_data
 def fetch_indicator(country, indicator, start, end):
-    """Fetch an indicator from the World Bank API and return a DataFrame with columns [year, <indicator>]."""
     base = "https://api.worldbank.org/v2"
     url = f"{base}/country/{country}/indicator/{indicator}?format=json&date={start}:{end}&per_page=1000"
 
@@ -112,213 +159,203 @@ def fetch_indicator(country, indicator, start, end):
 
 
 @st.cache_data
-def get_indicator_years(country, code, start, end):
-    df = fetch_indicator(country, code, start, end)
-    if df.empty:
-        return []
-    years = sorted(df["year"].astype(int).unique().tolist())
-    return years
-
-
-def _detect_energy_unit(code: str, name: str):
-    code_l = code.lower() if isinstance(code, str) else ""
-    name_l = name.lower() if isinstance(name, str) else ""
-
-    if "pcap" in code_l or "per capita" in name_l:
-        if "kg" in code_l or "kg" in name_l or "kg oil" in name_l:
-            return "kg_per_capita"
-        if "toe" in code_l or "toe" in name_l:
-            return "toe_per_capita"
-        if "mwh" in code_l or "mwh" in name_l:
-            return "mwh_per_capita"
-
-    if "ktoe" in code_l or "kt.oe" in code_l or "ktoe" in name_l or "kto" in name_l:
-        return "ktoe"
-    if "toe" in code_l and "ktoe" not in code_l:
-        return "toe"
-
-    if "mwh" in code_l or "mwh" in name_l:
-        return "mwh"
-    if "kwh" in code_l or "kwh" in name_l:
-        return "kwh"
-    if "gwh" in code_l or "gwh" in name_l:
-        return "gwh"
-
-    if "gj" in code_l or "gigajoule" in name_l:
-        return "gj"
-
-    return None
-
-
-@st.cache_data
 def get_data(country, year_range, indicators_map):
-    """Return merged DataFrame of selected indicators for the given country and year range.
-
-    indicators_map: dict mapping human name -> code
-    """
+    """Return merged DataFrame of selected indicators for the given country and year range."""
     start, end = year_range
 
     dfs = []
-
-    # fetch each selected indicator
     for name, code in indicators_map.items():
         if not code or not isinstance(code, str):
             continue
         df_ind = fetch_indicator(country, code, start, end)
         if df_ind.empty:
             continue
-        # rename column to human-readable name
         df_ind.rename(columns={code: name}, inplace=True)
         dfs.append(df_ind)
 
     if not dfs:
         return pd.DataFrame()
 
-    # merge on year
     df = dfs[0]
     for d in dfs[1:]:
         df = df.merge(d, on="year", how="outer")
 
     df = df.sort_values("year").reset_index(drop=True)
-
-    # energy normalization and CO2 fallbacks are preserved from original app, but simplified here
-    # (we don't aggressively reconstruct CO2 from many energy units in this focused version)
-
     return df
 
 
-# =========================
-# PLOT HELPERS
-# =========================
+def aggregate_group_members(dfs, group_name):
+    """Aggregate a list of country DataFrames (each with year + indicators) into a single group DataFrame.
+
+    Heuristic:
+    - For per-capita or percent indicators (detected by keywords), compute population-weighted average when Population is available.
+    - Otherwise sum numeric indicators across members.
+    """
+    if not dfs:
+        return pd.DataFrame()
+
+    # concat with country label if present
+    all_df = pd.concat(dfs, ignore_index=True, sort=False)
+    # ensure year is int
+    all_df["year"] = all_df["year"].astype(int)
+
+    numeric_cols = [c for c in all_df.columns if c != "year" and c != "country"]
+
+    result_rows = []
+    for year, group in all_df.groupby("year"):
+        row = {"year": int(year)}
+        # population sum for weighting
+        pop_sum = None
+        if "Population" in numeric_cols:
+            pop_sum = pd.to_numeric(group["Population"], errors="coerce").sum()
+        for col in numeric_cols:
+            vals = pd.to_numeric(group[col], errors="coerce")
+            if vals.dropna().empty:
+                row[col] = None
+                continue
+            # detect per-capita / percent indicators by name
+            lname = col.lower()
+            if ("per" in lname) or ("pc" in lname) or ("pct" in lname) or ("per_capita" in lname) or ("%" in lname) or ("_pc" in lname):
+                # try population-weighted average if population exists
+                if "Population" in group.columns and pop_sum and pop_sum > 0:
+                    weights = pd.to_numeric(group["Population"], errors="coerce")
+                    valid = (~vals.isna()) & (~weights.isna())
+                    if valid.any():
+                        weighted = (vals[valid] * weights[valid]).sum() / weights[valid].sum()
+                        row[col] = float(weighted)
+                        continue
+                # fallback to simple mean
+                row[col] = float(vals.mean())
+            else:
+                # sum totals
+                row[col] = float(vals.sum())
+        result_rows.append(row)
+
+    if not result_rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(result_rows).sort_values("year")
+    return out
 
 
-def plot_variable_single_country(df, var):
-    return px.line(df, x="year", y=var, title=var)
-
-
-def plot_variable_multi_country(df, var):
-    fig = px.line(df, x="year", y=var, color="country", markers=True, title=f"{var} — comparison")
-    return fig
+def make_entity_series(entity_name, df):
+    """Return a tidy DataFrame with columns: year, indicator, value, entity"""
+    rows = []
+    if df.empty:
+        return pd.DataFrame()
+    for _, r in df.iterrows():
+        year = int(r["year"])
+        for col in df.columns:
+            if col == "year":
+                continue
+            val = r[col]
+            try:
+                val = float(val)
+            except Exception:
+                continue
+            rows.append({"year": year, "indicator": col, "value": val, "entity": entity_name})
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
 
 
 # =========================
 # UI
 # =========================
 
-st.title("🌍 Kaya Identity Explorer — Focused WDI Variables & Multi-country Comparison")
+st.title("🌍 Kaya Explorer — focused indicators, 4-country selection + groups")
 
-with st.expander("Description"):
-    st.markdown(
-        """
-        This variant of the Kaya Explorer limits the WDI indicators to a focused set you provided and
-        allows comparing a single variable's trend across up to 6 countries.
-
-        Enter additional country ISO3 codes or WDI indicator codes (CODE or CODE:Name) using the text inputs below.
-        """
-    )
+st.markdown("This view automatically fetches the full focused set of indicators and graphs them for the selected countries and groups.")
 
 col1, col2 = st.columns(2)
 with col1:
-    selected_countries = st.multiselect("Select up to 6 countries (by name)", list(COUNTRIES.keys()), default=["USA", "China"])
+    selected_countries = st.multiselect("Select up to 4 countries (from top ~60 by population)", list(TOP60.keys()), default=["United States", "China"])
 with col2:
     years = st.slider("Years", 1960, 2022, (1990, 2020))
 
-# Allow adding extra countries by ISO3 code
-extra_countries_raw = st.text_input("Extra country ISO3 codes (comma-separated, e.g. TUR, MEX)")
-if extra_countries_raw.strip():
-    parts = [p.strip().upper() for p in extra_countries_raw.split(",") if p.strip()]
-    for p in parts:
-        # if not present, add using ISO3 as both key and code
-        if p not in COUNTRIES:
-            COUNTRIES[p] = p
-            if p not in selected_countries:
-                selected_countries.append(p)
-    st.success("Added extra countries to the selection box (by ISO3).")
+group_options = list(GROUPS.keys())
+col3, col4 = st.columns(2)
+with col3:
+    group_a = st.selectbox("Group A (optional)", ["None"] + group_options, index=0)
+with col4:
+    group_b = st.selectbox("Group B (optional)", ["None"] + group_options, index=0)
 
-# Indicator selection (limited to the focused set)
-indicator_names = list(INDICATORS.keys())
-selected_ind = st.multiselect("Indicators to fetch (choose 1 to compare across countries)", indicator_names, default=[indicator_names[0]])
-
-# Allow adding extra indicators by code
-extra_ind_raw = st.text_input("Extra WDI indicator codes (comma-separated). Optionally use CODE:Name to provide a display name.")
-if st.button("Add indicators") and extra_ind_raw.strip():
-    parts = [p.strip() for p in extra_ind_raw.split(",") if p.strip()]
-    for p in parts:
-        if ":" in p:
-            code, name = p.split(":", 1)
-            INDICATORS[name.strip()] = code.strip()
-            if name.strip() not in selected_ind:
-                selected_ind.append(name.strip())
-        else:
-            code = p
-            INDICATORS[code] = code
-            if code not in selected_ind:
-                selected_ind.append(code)
-    st.success("Added extra indicators to the selection. Click 'Load data' to fetch.")
-
-# Enforce max 6 countries
-if len(selected_countries) > 6:
-    st.error("Please select at most 6 countries.")
+# Enforce max 4 countries
+if len(selected_countries) > 4:
+    st.error("Please select at most 4 countries.")
     st.stop()
 
-# Ensure exactly one indicator is chosen for cross-country comparison
-if len(selected_ind) == 0:
-    st.warning("Select at least one indicator to fetch.")
+# Always fetch all indicators (no per-indicator selection)
+ind_map = INDICATORS.copy()
 
-# Button to load the selected data (avoids heavy startup network activity)
-if st.button("Load data"):
-    if len(selected_countries) == 0:
-        st.error("Choose at least one country.")
-        st.stop()
-    if len(selected_ind) == 0:
-        st.error("Choose at least one indicator.")
+if st.button("Load and plot all indicators"):
+    if not selected_countries and group_a == "None" and group_b == "None":
+        st.error("Choose at least one country or group to visualize.")
         st.stop()
 
-    with st.spinner("Fetching indicators from World Bank for selected countries..."):
-        start_year, end_year = years
-        to_fetch = {name: INDICATORS[name] for name in selected_ind}
+    start_year, end_year = years
+    entities_dfs = []  # list of tuples (label, df)
 
-        country_dfs = []
+    with st.spinner("Fetching data for selected countries..."):
+        # fetch for each selected country
         for cname in selected_countries:
-            ccode = COUNTRIES.get(cname, cname)  # if user added ISO3 directly, key==value
-            df = get_data(ccode, (start_year, end_year), to_fetch)
+            ccode = TOP60.get(cname, cname)
+            df = get_data(ccode, (start_year, end_year), ind_map)
             if df.empty:
                 st.warning(f"No data for {cname} in the selected range.")
                 continue
             df["country"] = cname
-            country_dfs.append(df)
+            entities_dfs.append((cname, df))
 
-        if not country_dfs:
-            st.error("No data available for the selected countries and years. Try expanding the year range or check indicators.")
-            st.stop()
+        # handle groups by aggregating their members
+        for g_label in (group_a, group_b):
+            if not g_label or g_label == "None":
+                continue
+            members = GROUPS.get(g_label, [])
+            member_dfs = []
+            for iso3 in members:
+                dfm = get_data(iso3, (start_year, end_year), ind_map)
+                if dfm.empty:
+                    continue
+                dfm["country"] = iso3
+                member_dfs.append(dfm)
+            if not member_dfs:
+                st.warning(f"No member data available for group {g_label} in the selected range.")
+                continue
+            agg = aggregate_group_members(member_dfs, g_label)
+            if agg.empty:
+                st.warning(f"Aggregation produced no data for {g_label}.")
+                continue
+            entities_dfs.append((g_label, agg))
 
-        # If multiple countries, build comparison for the first selected indicator (or let user pick)
-        if len(selected_ind) == 1:
-            var = selected_ind[0]
-        else:
-            var = st.selectbox("Select variable to compare across countries", selected_ind)
+    if not entities_dfs:
+        st.error("No data available to plot after fetching. Try expanding the year range or selecting different entities.")
+        st.stop()
 
-        # Concatenate and prepare data for plotting
-        combined = pd.concat(country_dfs, ignore_index=True, sort=False)
-        # Keep only year, var, country
-        if var not in combined.columns:
-            st.error(f"The selected variable '{var}' is not available in the fetched data.")
-        else:
-            plot_df = combined[["year", var, "country"]].copy()
-            plot_df[var] = pd.to_numeric(plot_df[var], errors="coerce")
-            plot_df = plot_df.dropna(subset=[var])
+    # Build a tidy dataframe with all entity series
+    series_list = []
+    for label, df in entities_dfs:
+        s = make_entity_series(label, df)
+        if not s.empty:
+            series_list.append(s)
 
-            if plot_df.empty:
-                st.error("No numeric values available for the chosen variable across the selected countries/years.")
-            else:
-                st.subheader("Comparison plot")
-                st.plotly_chart(plot_variable_multi_country(plot_df, var), use_container_width=True)
+    if not series_list:
+        st.error("No numeric series available to plot.")
+        st.stop()
 
-        # Show raw combined data
-        with st.expander("🔍 Show raw combined data"):
-            st.dataframe(combined)
+    tidy = pd.concat(series_list, ignore_index=True, sort=False)
+
+    st.subheader("Plots for all indicators")
+    # For each indicator, plot comparison across entities
+    for indicator in ind_map.keys():
+        sub = tidy[tidy["indicator"] == indicator]
+        if sub.empty:
+            st.info(f"Indicator '{indicator}' has no data for the selected entities/years.")
+            continue
+        fig = px.line(sub, x="year", y="value", color="entity", markers=True, title=indicator)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("🔍 Show combined tidy data (first 500 rows)"):
+        st.dataframe(tidy.head(500))
 
 else:
-    st.info("Click 'Load data' to fetch the chosen indicators for the selected countries and year range.")
-
-# End of file
+    st.info("Click 'Load and plot all indicators' to fetch the focused WDI indicators for the chosen countries and groups.")
