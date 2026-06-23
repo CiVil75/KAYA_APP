@@ -31,12 +31,12 @@ ENTITIES = {
 }
 
 COLORS = {
-    "World": "black",
-    "China": "#d62728",
-    "India": "#ff7f0e",
-    "USA": "#1f77b4",
-    "European Union": "#2ca02c",
-    "Russian Federation": "#9467bd"
+    "World": "red",
+    "China": "blue",
+    "India": "magenta",
+    "USA": "green",
+    "European Union": "cyan",
+    "Russian Federation": "yellow"
 }
 
 # =========================
@@ -91,7 +91,7 @@ def derive(df_pop, df_gdppc, df_energy_int):
     df_energy = df_gdp.copy()
     for c in df_gdp.columns:
         if c == "year": continue
-        df_energy[c] = df_gdp[c] * df_en_int[c] / 11630 / 1000000
+        df_energy[c] = df_gdp[c] * df_en_int[c] / 11630 / 1e12
 
     return df_gdp, df_en_int, df_energy
 
