@@ -86,7 +86,7 @@ def derive(df_pop, df_gdppc, df_energy_int):
     df_en_int = df_energy_int.copy()
     for c in df_energy_int.columns:
         if c == "year": continue
-        df_en_int[c] = 1 / df_energy_int[c] * 11630 
+        df_en_int[c] = 1 / df_energy_int[c] * 11166 
     
     df_energy = df_gdp.copy()
     for c in df_gdp.columns:
