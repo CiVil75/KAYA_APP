@@ -235,7 +235,7 @@ if st.button("Generate Figures"):
     df_pop = build_df(INDICATORS["Population"][0], entities, years)
     df_gdppc = build_df(INDICATORS["GDP per capita"][0], entities, years)
     df_energy_int = build_df(INDICATORS["Energy intensity"][0], entities, years)
-    df_CO2 = build_df(INDICATORS["CO2 emissions"][0], entities, years) * 1e9
+    df_CO2 = build_df(INDICATORS["CO2 emissions"][0], entities, years)
 
     # derived
     df_gdp, df_en_int, df_energy, df_CO2_intensity = derive(df_pop, df_gdppc, df_energy_int, df_CO2)
@@ -274,5 +274,5 @@ if st.button("Generate Figures"):
     st.plotly_chart(plot(df_CO2,
         "Fig I.7.9 — CO₂ emissions dynamics",
         "MtCO2/y",
-        1e9
+        1
     ), use_container_width=True)
