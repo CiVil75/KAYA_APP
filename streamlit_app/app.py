@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 st.set_page_config(layout="wide")
 
 BASE_YEAR = 1990
-FINAL_YEAR = 2020
+FINAL_YEAR = 2020 
 
 # =========================
 # INDICATORS
