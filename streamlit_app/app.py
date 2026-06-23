@@ -1,9 +1,8 @@
 import streamlit as st
 import requests
 import pandas as pd
-import plotly.express as px
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
 
@@ -11,265 +10,212 @@ st.set_page_config(layout="wide")
 # CONFIG
 # =========================
 
-# Focused list of WDI indicators (human name -> code)
 INDICATORS = {
-    "GHG_total_AR5 (Mt CO2e)": "EN.GHG.ALL.LU.MT.CE.AR5",
-    "GHG_per_capita_AR5 (t CO2e per person)": "EN.GHG.ALL.PC.CE.AR5",
-    "CO2_to_GDP (kg CO2 per 2017 PPP $)": "EN.GHG.CO2.RT.GDP.PP.KD",
-    "Population": "SP.POP.TOTL",
-    "GDP_PPP (current international $)": "NY.GDP.MKTP.PP.KD",
-    "Energy_use_per_GDP_PPP": "EG.GDP.PUSE.KO.PP.KD",
-    "GDP_per_capita_PPP": "NY.GDP.PCAP.PP.KD",
-    "Primary_energy_supply_PPP": "EG.EGY.PRIM.PP.KD",
-    "Energy_use_comm_per_GDP_PPP": "EG.USE.COMM.GD.PP.KD",
-    "Renewable_final_energy_pct": "EG.FEC.RNEW.ZS",
-    "Commercial_energy_share_coal_pct": "EG.USE.COMM.CL.ZS",
+    "Population": "SP.POP.TOTL",                      # A
+    "GDP per capita": "NY.GDP.PCAP.PP.KD",            # B
+    "Energy intensity": "EG.GDP.PUSE.KO.PP.KD",       # C
+    "CO2 intensity": "EN.GHG.CO2.RT.GDP.PP.KD",       # D proxy
 }
 
-# Top ~60 countries by population (display name -> ISO3), plus region codes World and European Union
 ENTITIES = {
     "China": "CHN",
     "India": "IND",
-    "United States": "USA",
-    "Indonesia": "IDN",
-    "Pakistan": "PAK",
-    "Brazil": "BRA",
-    "Nigeria": "NGA",
-    "Bangladesh": "BGD",
-    "Russia": "RUS",
-    "Mexico": "MEX",
-    "Japan": "JPN",
-    "Ethiopia": "ETH",
-    "Philippines": "PHL",
-    "Egypt": "EGY",
-    "Vietnam": "VNM",
-    "DR Congo": "COD",
-    "Turkey": "TUR",
-    "Iran": "IRN",
-    "Germany": "DEU",
-    "Thailand": "THA",
-    "United Kingdom": "GBR",
-    "France": "FRA",
-    "Italy": "ITA",
-    "South Africa": "ZAF",
-    "Tanzania": "TZA",
-    "Myanmar": "MMR",
-    "South Korea": "KOR",
-    "Colombia": "COL",
-    "Kenya": "KEN",
-    "Spain": "ESP",
-    "Argentina": "ARG",
-    "Algeria": "DZA",
-    "Sudan": "SDN",
-    "Ukraine": "UKR",
-    "Uganda": "UGA",
-    "Iraq": "IRQ",
-    "Poland": "POL",
-    "Canada": "CAN",
-    "Morocco": "MAR",
-    "Saudi Arabia": "SAU",
-    "Uzbekistan": "UZB",
-    "Peru": "PER",
-    "Angola": "AGO",
-    "Malaysia": "MYS",
-    "Mozambique": "MOZ",
-    "Ghana": "GHA",
-    "Yemen": "YEM",
-    "Nepal": "NPL",
-    "Venezuela": "VEN",
-    "Madagascar": "MDG",
-    "Cameroon": "CMR",
-    "Côte d'Ivoire": "CIV",
-    "North Korea": "PRK",
-    "Australia": "AUS",
-    "Taiwan": "TWN",
-    "Syria": "SYR",
-    "Romania": "ROU",
-    # Region / aggregate codes supported by WDI
-    "World": "WLD",
-    "European Union": "EUU",
+    "USA": "USA",
+    "EU": "EUU",
+    "World": "WLD"
 }
 
+BASE_YEAR = 1990
+
 # =========================
-# HELPERS
+# DATA FUNCTION
 # =========================
 
-def _requests_session_with_retries(total_retries: int = 3, backoff_factor: float = 0.5):
-    session = requests.Session()
-    retries = Retry(
-        total=total_retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"]
+def fetch_wdi(country, indicator, start, end):
+    url = f"https://api.worldbank.org/v2/country/{country}/indicator/{indicator}?date={start}:{end}&format=json&per_page=1000"
+    r = requests.get(url).json()
+
+    if len(r) < 2:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(r[1])
+    df = df[["date", "value"]].rename(columns={"date": "year"})
+    df["year"] = df["year"].astype(int)
+    df = df.sort_values("year")
+
+    return df
+
+
+def build_kaya_dataframe(entity, years):
+    data = {}
+
+    for name, code in INDICATORS.items():
+        df = fetch_wdi(entity, code, years[0], years[1])
+        if df.empty:
+            return pd.DataFrame()
+
+        data[name] = df["value"].values
+        years_series = df["year"]
+
+    df_all = pd.DataFrame(data)
+    df_all["year"] = years_series.values
+
+    # =========================
+    # ENERGY CONSUMPTION (A × B × C)
+    # =========================
+
+    df_all["Energy consumption"] = (
+        df_all["Population"] *
+        df_all["GDP per capita"] *
+        df_all["Energy intensity"]
     )
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
+
+    return df_all
 
 
-@st.cache_data
-def fetch_indicator(country, indicator, start, end):
-    base = "https://api.worldbank.org/v2"
-    url = f"{base}/country/{country}/indicator/{indicator}?format=json&date={start}:{end}&per_page=1000"
+# =========================
+# TRANSFORMATIONS
+# =========================
 
-    session = _requests_session_with_retries()
+def normalize(df):
+    df = df.copy()
 
-    try:
-        resp = session.get(url, timeout=10)
-    except requests.RequestException:
-        return pd.DataFrame()
+    for col in df.columns:
+        if col == "year":
+            continue
 
-    if resp.status_code != 200:
-        return pd.DataFrame()
+        base = df[df["year"] == BASE_YEAR][col]
+        if base.empty or base.values[0] == 0:
+            continue
 
-    try:
-        data = resp.json()
-    except ValueError:
-        return pd.DataFrame()
-
-    if not isinstance(data, list) or len(data) < 2 or not data[1]:
-        return pd.DataFrame()
-
-    records = data[1]
-    df = pd.DataFrame(records)
-
-    if "date" not in df.columns or "value" not in df.columns:
-        return pd.DataFrame()
-
-    df = df[["date", "value"]].copy()
-    df.columns = ["year", indicator]
-
-    try:
-        df["year"] = df["year"].astype(int)
-    except Exception:
-        df = df[df["year"].str.isdigit()]
-        df["year"] = df["year"].astype(int)
+        df[col] = df[col] / base.values[0]
 
     return df
 
 
-@st.cache_data
-def get_data(country, year_range, indicators_map):
-    """Return merged DataFrame of the focused indicators for the given country/region and year range."""
-    start, end = year_range
+def growth(df):
+    df = df.copy()
 
-    dfs = []
-    for name, code in indicators_map.items():
-        if not code or not isinstance(code, str):
+    for col in df.columns:
+        if col == "year":
             continue
-        df_ind = fetch_indicator(country, code, start, end)
-        if df_ind.empty:
-            continue
-        df_ind.rename(columns={code: name}, inplace=True)
-        dfs.append(df_ind)
 
-    if not dfs:
-        return pd.DataFrame()
+        df[col] = df[col].pct_change() * 100
 
-    df = dfs[0]
-    for d in dfs[1:]:
-        df = df.merge(d, on="year", how="outer")
-
-    df = df.sort_values("year").reset_index(drop=True)
     return df
 
 
-def make_entity_series(entity_name, df):
-    """Return a tidy DataFrame with columns: year, indicator, value, entity"""
-    rows = []
-    if df.empty:
-        return pd.DataFrame()
-    for _, r in df.iterrows():
-        year = int(r["year"])
-        for col in df.columns:
-            if col == "year":
-                continue
-            val = r[col]
-            try:
-                val = float(val)
-            except Exception:
-                continue
-            rows.append({"year": year, "indicator": col, "value": val, "entity": entity_name})
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows)
+# =========================
+# PLOT FUNCTION
+# =========================
+
+def plot_combined_kaya(df, entity_name):
+
+    df_norm = normalize(df)
+    df_growth = growth(df)
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        subplot_titles=(
+            f"{entity_name} – Normalized Kaya factors (base 1990)",
+            f"{entity_name} – Growth rates (%/year)"
+        )
+    )
+
+    variables = [
+        "Population",
+        "GDP per capita",
+        "Energy intensity",
+        "CO2 intensity",
+        "Energy consumption"
+    ]
+
+    colors = {
+        "Population": "gold",
+        "GDP per capita": "cyan",
+        "Energy intensity": "green",
+        "CO2 intensity": "red",
+        "Energy consumption": "purple",
+    }
+
+    # TOP PANEL
+    for var in variables:
+        fig.add_trace(
+            go.Scatter(
+                x=df_norm["year"],
+                y=df_norm[var],
+                name=var,
+                line=dict(color=colors[var])
+            ),
+            row=1, col=1
+        )
+
+    # BOTTOM PANEL
+    for var in variables:
+        fig.add_trace(
+            go.Scatter(
+                x=df_growth["year"],
+                y=df_growth[var],
+                showlegend=False,
+                line=dict(color=colors[var])
+            ),
+            row=2, col=1
+        )
+
+    fig.update_yaxes(title_text="Normalized (1990=1)", row=1, col=1)
+    fig.update_yaxes(title_text="Growth rate (%)", row=2, col=1)
+    fig.update_xaxes(title_text="Year", row=2, col=1)
+
+    fig.update_layout(height=750)
+
+    return fig
 
 
 # =========================
 # UI
 # =========================
 
-st.title("🌍 Kaya Explorer — focused indicators, default entities")
+st.title("🌍 Kaya Explorer – Full Chapter Reproduction")
 
-st.markdown(
-    "This view automatically fetches the focused WDI indicators and compares a default set of entities.\n\n"
-    "You can override selection (up to 6 entities) from the provided list including two region codes (World, European Union)."
+st.markdown("""
+This version reproduces **Figure I.7.10-style combined Kaya dynamics**:
+
+- Population (A)
+- GDP per capita (B)
+- Energy intensity (C)
+- Carbon intensity (D)
+- ✅ Energy consumption (A × B × C)
+
+All plots:
+- Top → normalized to 1990
+- Bottom → growth rates
+""")
+
+entities = st.multiselect(
+    "Select entities",
+    list(ENTITIES.keys()),
+    default=["World", "China", "USA", "EU"]
 )
 
-col1, col2 = st.columns(2)
-with col1:
-    selected_entities = st.multiselect(
-        "Select up to 6 entities (countries or region codes)", list(ENTITIES.keys()),
-        default=["United States", "European Union", "World", "China", "India", "Russia"]
-    )
-with col2:
-    years = st.slider("Years", 1960, 2022, (1990, 2020))
+years = st.slider("Years", 1990, 2022, (1990, 2020))
 
-# Enforce max 6 entities
-if len(selected_entities) > 6:
-    st.error("Please select at most 6 entities.")
-    st.stop()
+# =========================
+# EXECUTION
+# =========================
 
-# Always fetch all indicators (no per-indicator selection)
-ind_map = INDICATORS.copy()
+if st.button("Run Kaya Analysis"):
 
-if st.button("Load and plot all indicators"):
-    if not selected_entities:
-        st.error("Choose at least one entity to visualize.")
-        st.stop()
+    for entity in entities:
 
-    start_year, end_year = years
-    entities_dfs = []  # list of tuples (label, df)
+        st.header(entity)
 
-    with st.spinner("Fetching data for selected entities..."):
-        for label in selected_entities:
-            code = ENTITIES.get(label, label)
-            df = get_data(code, (start_year, end_year), ind_map)
-            if df.empty:
-                st.warning(f"No data for {label} ({code}) in the selected range.")
-                continue
-            df["entity"] = label
-            entities_dfs.append((label, df))
+        df = build_kaya_dataframe(ENTITIES[entity], years)
 
-    if not entities_dfs:
-        st.error("No data available to plot after fetching. Try expanding the year range or selecting different entities.")
-        st.stop()
-
-    # Build a tidy dataframe with all entity series
-    series_list = []
-    for label, df in entities_dfs:
-        s = make_entity_series(label, df)
-        if not s.empty:
-            series_list.append(s)
-
-    if not series_list:
-        st.error("No numeric series available to plot.")
-        st.stop()
-
-    tidy = pd.concat(series_list, ignore_index=True, sort=False)
-
-    st.subheader("Plots for all indicators")
-    for indicator in ind_map.keys():
-        sub = tidy[tidy["indicator"] == indicator]
-        if sub.empty:
-            st.info(f"Indicator '{indicator}' has no data for the selected entities/years.")
+        if df.empty:
+            st.warning(f"No data for {entity}")
             continue
-        fig = px.line(sub, x="year", y="value", color="entity", markers=True, title=indicator)
+
+        fig = plot_combined_kaya(df, entity)
         st.plotly_chart(fig, use_container_width=True)
-
-    with st.expander("🔍 Show combined tidy data (first 500 rows)"):
-        st.dataframe(tidy.head(500))
-
-else:
-    st.info("Click 'Load and plot all indicators' to fetch the focused WDI indicators for the chosen entities.")
