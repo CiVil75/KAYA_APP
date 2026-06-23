@@ -284,8 +284,7 @@ def plot(df, title, unit="", factor=1, note=None):
 def compute_temperature_metrics(df_co2, years, mt_to_gt_factor=1000.0, gt_to_ppm_factor=7.82, ppm_to_temp_factor=120.0):
     """
     Compute for each column in df_co2 (except 'year') the following chain:
-      - integrated_MtCO2: trapezoidal integral of CO2 [MtCO2/y] over the selected years -> total MtCO2
-      - integrated_GtCO2: integrated_MtCO2 / mt_to_gt_factor -> total GtCO2
+      - cumuklative_GtCO2: integrated_MtCO2 / mt_to_gt_factor -> total GtCO2
       - resident_ppm: integrated_GtCO2 / gt_to_ppm_factor -> ppm equivalent
       - temp_increase_C: resident_ppm / ppm_to_temp_factor -> estimated temperature increase [°C]
       - final_derivative_C_per_year: last derivative (°C/year) of the cumulative temperature time series
@@ -302,7 +301,6 @@ def compute_temperature_metrics(df_co2, years, mt_to_gt_factor=1000.0, gt_to_ppm
         if s.empty:
             results.append({
                 "entity": c,
-                "integrated_MtCO2": np.nan,
                 "integrated_GtCO2": np.nan,
                 "resident_ppm": np.nan,
                 "temp_increase_C": np.nan,
@@ -319,7 +317,6 @@ def compute_temperature_metrics(df_co2, years, mt_to_gt_factor=1000.0, gt_to_ppm
         if len(ya) < 2 or np.all(np.isnan(co2_mt)):
             results.append({
                 "entity": c,
-                "integrated_MtCO2": np.nan,
                 "integrated_GtCO2": np.nan,
                 "resident_ppm": np.nan,
                 "temp_increase_C": np.nan,
@@ -333,7 +330,6 @@ def compute_temperature_metrics(df_co2, years, mt_to_gt_factor=1000.0, gt_to_ppm
         y_mt = co2_mt[mask_vals]
 
         if len(x) < 2:
-            integrated_Mt = np.nan
             integrated_Gt = np.nan
             resident_ppm = np.nan
             temp_increase = np.nan
@@ -366,7 +362,6 @@ def compute_temperature_metrics(df_co2, years, mt_to_gt_factor=1000.0, gt_to_ppm
 
         results.append({
             "entity": c,
-            "integrated_MtCO2": integrated_Mt,
             "integrated_GtCO2": integrated_Gt,
             "resident_ppm": resident_ppm,
             "temp_increase_C": temp_increase,
@@ -482,7 +477,7 @@ if st.button("Generate Figures"):
             if world_name and world_name in display_df.index:
                 world_vals = display_df.loc[world_name]
                 pct_cols = {}
-                for col in ["integrated_MtCO2", "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]:
+                for col in ["integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]:
                     w = world_vals.get(col, np.nan)
                     if pd.notna(w) and w != 0:
                         display_df[f"pct_of_world_{col}"] = display_df[col] / w * 100
@@ -490,11 +485,10 @@ if st.button("Generate Figures"):
                         display_df[f"pct_of_world_{col}"] = np.nan
             else:
                 # no world values available
-                for col in ["integrated_MtCO2", "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]:
+                for col in ["integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]:
                     display_df[f"pct_of_world_{col}"] = np.nan
 
             # rounding and ordering
-            display_df["integrated_MtCO2"] = display_df["integrated_MtCO2"].map(lambda x: np.round(x, 1) if pd.notna(x) else x)
             display_df["integrated_GtCO2"] = display_df["integrated_GtCO2"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
             display_df["resident_ppm"] = display_df["resident_ppm"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
             display_df["temp_increase_C"] = display_df["temp_increase_C"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
@@ -514,8 +508,8 @@ if st.button("Generate Figures"):
 
             # show a subset of columns in a sensible order
             cols_order = [
-                "integrated_MtCO2", "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year",
-                "pct_of_world_integrated_MtCO2", "pct_of_world_integrated_GtCO2", "pct_of_world_resident_ppm", "pct_of_world_temp_increase_C", "pct_of_world_final_derivative_C_per_year"
+                "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year",
+                "pct_of_world_final_derivative_C_per_year"
             ]
 
             # some columns may be missing if metrics couldn't be computed; keep only existing
