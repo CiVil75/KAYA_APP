@@ -477,7 +477,7 @@ if st.button("Generate Figures"):
             if world_name and world_name in display_df.index:
                 world_vals = display_df.loc[world_name]
                 pct_cols = {}
-                for col in ["integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]:
+                for col in ["final_derivative_C_per_year"]:
                     w = world_vals.get(col, np.nan)
                     if pd.notna(w) and w != 0:
                         display_df[f"pct_of_world_{col}"] = display_df[col] / w * 100
@@ -485,7 +485,7 @@ if st.button("Generate Figures"):
                         display_df[f"pct_of_world_{col}"] = np.nan
             else:
                 # no world values available
-                for col in ["integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]:
+                for col in ["final_derivative_C_per_year"]:
                     display_df[f"pct_of_world_{col}"] = np.nan
 
             # rounding and ordering
@@ -494,7 +494,7 @@ if st.button("Generate Figures"):
             display_df["temp_increase_C"] = display_df["temp_increase_C"].map(lambda x: np.round(x, 4) if pd.notna(x) else x)
             display_df["final_derivative_C_per_year"] = display_df["final_derivative_C_per_year"].map(lambda x: np.round(x, 6) if pd.notna(x) else x)
 
-            for col in [f"pct_of_world_{c}" for c in ["integrated_MtCO2", "integrated_GtCO2", "resident_ppm", "temp_increase_C", "final_derivative_C_per_year"]]:
+            for col in [f"pct_of_world_{c}" for c in ["final_derivative_C_per_year"]]:
                 display_df[col] = display_df[col].map(lambda x: np.round(x, 2) if pd.notna(x) else x)
 
             # ensure World row is present and show world first
