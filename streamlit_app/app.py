@@ -90,7 +90,7 @@ def derive(df_pop, df_gdppc, df_energy_int, df_CO2):
     df_energy = df_gdp.copy()
     for c in df_gdp.columns:
         if c == "year": continue
-        df_energy[c] = df_gdp[c] * df_en_int[c] / 11630 / 1e12
+        df_energy[c] = df_gdp[c] * df_en_int[c] / 11630 / 1e9
 
     df_CO2_intensity = df_CO2.copy()
     for c in df_gdp.columns:
@@ -273,6 +273,6 @@ if st.button("Generate Figures"):
 
     st.plotly_chart(plot(df_CO2,
         "Fig I.7.9 — CO₂ emissions dynamics",
-        "GtCO2/y",
+        "MtCO2/y",
         1e9
     ), use_container_width=True)
